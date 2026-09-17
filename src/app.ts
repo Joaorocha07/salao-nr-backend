@@ -3,7 +3,9 @@ import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import swaggerUi from 'swagger-ui-express';
 import { env } from './config/env';
+import { openapiSpec } from './docs/openapi';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import { apiRateLimiter } from './middlewares/rateLimit.middleware';
 import { authRouter } from './modules/auth/auth.routes';
@@ -28,6 +30,11 @@ app.use(morgan(env.NODE_ENV === 'development' ? 'dev' : 'combined'));
 app.use(apiRateLimiter);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+// CSP do helmet bloqueia o script/CSS inline do Swagger UI; desliga só
+// nessa rota (o resto da API segue com o CSP padrão do helmet).
+app.use('/docs', helmet({ contentSecurityPolicy: false }), swaggerUi.serve, swaggerUi.setup(openapiSpec));
+app.get('/docs.json', (_req, res) => res.json(openapiSpec));
 
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);

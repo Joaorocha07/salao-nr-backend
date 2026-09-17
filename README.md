@@ -96,4 +96,17 @@ src/modules/settings/      configurações por empresa
 | GET/PUT | `/api/settings` | Configurações da empresa atual |
 
 Detalhes de payload, claims do token e fluxos de segurança estão em
-[`docs/JWT.md`](docs/JWT.md).
+[`docs/JWT.md`](docs/JWT.md). Payload, resposta e regras de cada rota de
+negócio (leads, campanhas, equipe, configurações) estão em
+[`docs/API.md`](docs/API.md).
+
+## Documentação interativa (Swagger)
+
+Com o servidor rodando, a documentação da API fica disponível em:
+
+- `http://localhost:3333/docs` — Swagger UI (testável no navegador, com
+  suporte a "Authorize" para colar o `accessToken`)
+- `http://localhost:3333/docs.json` — o spec OpenAPI puro (JSON)
+
+O spec é mantido em [`src/docs/openapi.ts`](src/docs/openapi.ts); ao
+adicionar/alterar uma rota, atualize esse arquivo (e `docs/API.md`) junto.
