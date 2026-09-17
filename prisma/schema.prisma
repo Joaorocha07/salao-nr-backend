@@ -1,0 +1,210 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  EMPLOYEE
+}
+
+enum LeadStatus {
+  NOVO_LEAD
+  AGENDADO
+  FECHADO
+  NAO_FECHOU
+  ANTIGO
+}
+
+// Uma empresa (ex.: as duas unidades do salão). Todo dado de negócio
+// pertence a uma Company; um usuário pode ter acesso a mais de uma.
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships   CompanyMembership[]
+  leads         Lead[]
+  campaigns     Campaign[]
+  settings      CompanySettings?
+  refreshTokens RefreshToken[]
+
+  @@map("companies")
+}
+
+// Conta de usuário. O e-mail é único no sistema; o acesso a cada empresa
+// é controlado por CompanyMembership.
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships   CompanyMembership[]
+  refreshTokens RefreshToken[]
+
+  @@map("users")
+}
+
+// Vínculo do usuário com uma empresa específica + papel dentro dela.
+// É essa tabela que permite "a mesma pessoa, duas empresas, dados diferentes".
+model CompanyMembership {
+  id        String   @id @default(uuid())
+  userId    String
+  companyId String
+  role      Role     @default(EMPLOYEE)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, companyId])
+  @@index([companyId])
+  @@map("company_memberships")
+}
+
+// Refresh tokens de longa duração, com suporte a rotação e revogação.
+// Nunca guardamos o token em texto puro, apenas o hash (SHA-256).
+model RefreshToken {
+  id                  String    @id @default(uuid())
+  userId              String
+  companyId           String
+  tokenHash           String    @unique
+  expiresAt           DateTime
+  revokedAt           DateTime?
+  replacedByTokenHash String?
+  userAgent           String?
+  ipAddress           String?
+  createdAt           DateTime  @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([companyId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model Lead {
+  id              String     @id @default(uuid())
+  companyId       String
+  name            String
+  phone           String
+  gender          String?
+  birthday        String?
+  status          LeadStatus @default(NOVO_LEAD)
+  interests       String[]   @default([])
+  date            String
+  activityDate    String?
+  appointmentDate String?
+  appointmentTime String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  company  Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  notes    LeadNote[]
+  messages LeadMessage[]
+  history  ServiceRecord[]
+
+  @@index([companyId])
+  @@index([companyId, status])
+  @@map("leads")
+}
+
+model LeadNote {
+  id        String   @id @default(uuid())
+  leadId    String
+  text      String
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@map("lead_notes")
+}
+
+model LeadMessage {
+  id        String   @id @default(uuid())
+  leadId    String
+  text      String
+  own       Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@map("lead_messages")
+}
+
+model ServiceRecord {
+  id        String   @id @default(uuid())
+  leadId    String
+  companyId String
+  service   String
+  date      String
+  time      String?
+  createdAt DateTime @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@index([companyId])
+  @@map("service_records")
+}
+
+model Campaign {
+  id              String   @id @default(uuid())
+  companyId       String
+  name            String
+  date            String
+  message         String
+  mediaUrl        String?
+  recipientCount  Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@map("campaigns")
+}
+
+model CompanySettings {
+  companyId            String  @id
+  salonName            String  @default("")
+  ownerName            String  @default("")
+  email                String  @default("")
+  greetingMessage      String  @default("")
+  autoOldLeadDays      Int     @default(30)
+  whatsappConnected    Boolean @default(false)
+  captureConversations Boolean @default(true)
+  captureName          Boolean @default(true)
+  capturePhone         Boolean @default(true)
+  autoCreateLead       Boolean @default(true)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("company_settings")
+}
