@@ -37,7 +37,6 @@ export const openapiSpec = {
     { name: 'Auth', description: 'Registro, login em 2 etapas, refresh, senha' },
     { name: 'Users', description: 'Equipe (membros) da empresa atual' },
     { name: 'Leads', description: 'CRM: leads, notas, mensagens, agendamento, histórico' },
-    { name: 'Campaigns', description: 'Campanhas de mensagens' },
     { name: 'Settings', description: 'Configurações da empresa atual' },
   ],
   components: {
@@ -89,17 +88,6 @@ export const openapiSpec = {
           service: { type: 'string' },
           date: { type: 'string' },
           time: { type: 'string', nullable: true },
-        },
-      },
-      Campaign: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          name: { type: 'string' },
-          date: { type: 'string' },
-          message: { type: 'string' },
-          mediaUrl: { type: 'string', nullable: true },
-          recipientCount: { type: 'integer' },
         },
       },
       CompanySettings: {
@@ -485,43 +473,6 @@ export const openapiSpec = {
           { name: 'recordId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
         ],
         responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { lead: { $ref: '#/components/schemas/Lead' } } } } } }, '404': errorResponse },
-      },
-    },
-    '/campaigns': {
-      get: {
-        tags: ['Campaigns'],
-        summary: 'Lista as campanhas da empresa atual',
-        responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { campaigns: { type: 'array', items: { $ref: '#/components/schemas/Campaign' } } } } } } } },
-      },
-      post: {
-        tags: ['Campaigns'],
-        summary: 'Cria uma campanha de mensagens',
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                required: ['name', 'message', 'recipientIds'],
-                properties: {
-                  name: { type: 'string' },
-                  message: { type: 'string' },
-                  mediaUrl: { type: 'string', format: 'uri' },
-                  recipientIds: { type: 'array', items: { type: 'string', format: 'uuid' }, minItems: 1 },
-                },
-              },
-            },
-          },
-        },
-        responses: { '201': { content: { 'application/json': { schema: { type: 'object', properties: { campaign: { $ref: '#/components/schemas/Campaign' } } } } } }, '400': errorResponse },
-      },
-    },
-    '/campaigns/{id}': {
-      delete: {
-        tags: ['Campaigns'],
-        summary: 'Remove uma campanha',
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
-        responses: { '204': { description: 'Sem conteúdo' }, '404': errorResponse },
       },
     },
     '/settings': {

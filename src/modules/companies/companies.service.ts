@@ -23,13 +23,16 @@ async function uniqueSlug(base: string): Promise<string> {
 }
 
 export async function createCompany(userId: string, input: { name: string }) {
-  const slug = await uniqueSlug(input.name);
+  const [slug, user] = await Promise.all([
+    uniqueSlug(input.name),
+    prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { name: true, email: true } }),
+  ]);
 
   const company = await prisma.company.create({
     data: {
       name: input.name,
       slug,
-      settings: { create: { salonName: input.name } },
+      settings: { create: { salonName: input.name, ownerName: user.name, email: user.email } },
     },
   });
 

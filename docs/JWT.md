@@ -97,7 +97,7 @@ passo 1 vier com `status: "select-company"`, mostra-se um seletor com as
 
 ## Usando o access token
 
-Toda rota de negócio (`/api/leads`, `/api/users`, `/api/campaigns`,
+Toda rota de negócio (`/api/leads`, `/api/users`,
 `/api/settings`, `/api/auth/me`, `/api/auth/companies`) exige:
 
 ```

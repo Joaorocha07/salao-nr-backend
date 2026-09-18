@@ -139,38 +139,6 @@ do lead.
 
 Resposta: `200 { "lead": Lead }`.
 
-## Campanhas (`/api/campaigns`)
-
-Modelo: `id, name, date, message, mediaUrl?, recipientCount`.
-
-### `GET /api/campaigns`
-
-Resposta: `200 { "campaigns": Campaign[] }`.
-
-### `POST /api/campaigns`
-
-Corpo (`createCampaignSchema`):
-
-```json
-{
-  "name": "Promoção de aniversário",
-  "message": "Parabéns! Ganhe 20% de desconto este mês.",
-  "mediaUrl": "https://exemplo.com/banner.png",
-  "recipientIds": ["<leadId1>", "<leadId2>"]
-}
-```
-
-- `recipientIds`: UUIDs de leads, pelo menos 1. `recipientCount` é derivado
-  do tamanho da lista (a campanha não guarda a lista de destinatários,
-  apenas a contagem — ver `campaigns.service.ts`).
-- `mediaUrl`: opcional, precisa ser uma URL válida quando enviado.
-
-Resposta: `201 { "campaign": Campaign }`.
-
-### `DELETE /api/campaigns/:id`
-
-Resposta: `204` sem corpo.
-
 ## Configurações (`/api/settings`)
 
 Configuração é 1:1 por empresa (`CompanySettings`, chave primária

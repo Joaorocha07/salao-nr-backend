@@ -39,7 +39,6 @@ model Company {
 
   memberships   CompanyMembership[]
   leads         Lead[]
-  campaigns     Campaign[]
   settings      CompanySettings?
   refreshTokens RefreshToken[]
 
@@ -53,6 +52,7 @@ model User {
   name         String
   email        String   @unique
   googleId     String?  @unique
+  imageUrl     String?
   passwordHash String?
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
@@ -73,6 +73,10 @@ model CompanyMembership {
   role           Role             @default(EMPLOYEE)
   active         Boolean          @default(true)
   approvalStatus MembershipStatus @default(ACTIVE)
+  // Telas que este membro pode ver no menu. Lista vazia = sem restrição
+  // (acesso a tudo). Só é aplicado a funcionários; administradores sempre
+  // têm acesso completo, independente deste campo.
+  allowedScreens String[]         @default([])
   createdAt      DateTime         @default(now())
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -182,22 +186,6 @@ model ServiceRecord {
   @@index([leadId])
   @@index([companyId])
   @@map("service_records")
-}
-
-model Campaign {
-  id             String   @id @default(uuid())
-  companyId      String
-  name           String
-  date           String
-  message        String
-  mediaUrl       String?
-  recipientCount Int      @default(0)
-  createdAt      DateTime @default(now())
-
-  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
-
-  @@index([companyId])
-  @@map("campaigns")
 }
 
 model CompanySettings {

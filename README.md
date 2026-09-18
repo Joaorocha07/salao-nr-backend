@@ -64,7 +64,6 @@ src/middlewares/           autenticação, papéis, validação, rate limit, err
 src/modules/auth/          registro, login em 2 etapas, refresh, troca/recuperação de senha
 src/modules/users/         equipe (membros) de cada empresa
 src/modules/leads/         CRM: leads, notas, mensagens, agendamento, histórico
-src/modules/campaigns/     campanhas de mensagens
 src/modules/settings/      configurações por empresa
 ```
 
@@ -75,7 +74,7 @@ src/modules/settings/      configurações por empresa
 - `CompanyMembership`: liga um `User` a uma `Company` com um papel
   (`ADMIN`/`EMPLOYEE`). É essa tabela que resolve "a mesma pessoa loga e
   escolhe em qual empresa entrar".
-- Toda tabela de negócio (`Lead`, `Campaign`, `CompanySettings`, ...) tem
+- Toda tabela de negócio (`Lead`, `CompanySettings`, ...) tem
   `companyId`, e todo acesso é filtrado por `req.auth.companyId` — que vem
   do JWT, não de um parâmetro que o cliente possa manipular.
 
@@ -92,7 +91,6 @@ src/modules/settings/      configurações por empresa
 | GET | `/api/auth/companies` | Empresas às quais o usuário logado tem acesso |
 | GET/POST/PATCH | `/api/users` | Equipe da empresa atual (somente ADMIN cria/edita) |
 | GET/POST/PATCH/DELETE | `/api/leads` | Leads/clientes, notas, mensagens, agendamento, histórico |
-| GET/POST/DELETE | `/api/campaigns` | Campanhas de mensagens |
 | GET/PUT | `/api/settings` | Configurações da empresa atual |
 
 Detalhes de payload, claims do token e fluxos de segurança estão em

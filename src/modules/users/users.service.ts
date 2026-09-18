@@ -18,6 +18,7 @@ export async function listCompanyMembers(companyId: string) {
     email: m.user.email,
     role: m.role,
     active: m.active && m.user.active,
+    allowedScreens: m.allowedScreens,
   }));
 }
 
@@ -58,6 +59,7 @@ export async function approveMember(companyId: string, membershipId: string) {
     email: updated.user.email,
     role: updated.role,
     active: updated.active,
+    allowedScreens: updated.allowedScreens,
   };
 }
 
@@ -75,7 +77,7 @@ export async function rejectMember(companyId: string, membershipId: string) {
 
 export async function addCompanyMember(
   companyId: string,
-  input: { name: string; email: string; role: Role; password?: string },
+  input: { name: string; email: string; role: Role; password?: string; allowedScreens?: string[] },
 ) {
   let user = await prisma.user.findUnique({ where: { email: input.email } });
 
@@ -90,7 +92,13 @@ export async function addCompanyMember(
   }
 
   const membership = await prisma.companyMembership.create({
-    data: { userId: user.id, companyId, role: input.role, approvalStatus: MembershipStatus.ACTIVE },
+    data: {
+      userId: user.id,
+      companyId,
+      role: input.role,
+      approvalStatus: MembershipStatus.ACTIVE,
+      allowedScreens: input.allowedScreens ?? [],
+    },
     include: { user: true },
   });
 
@@ -101,6 +109,7 @@ export async function addCompanyMember(
     email: membership.user.email,
     role: membership.role,
     active: membership.active,
+    allowedScreens: membership.allowedScreens,
   };
 }
 
@@ -117,7 +126,7 @@ async function protectLastActiveAdmin(companyId: string, membershipId: string) {
 export async function updateCompanyMember(
   companyId: string,
   membershipId: string,
-  input: { name?: string; role?: Role; active?: boolean },
+  input: { name?: string; role?: Role; active?: boolean; allowedScreens?: string[] },
 ) {
   const membership = await prisma.companyMembership.findFirst({
     where: { id: membershipId, companyId, approvalStatus: MembershipStatus.ACTIVE },
@@ -135,7 +144,7 @@ export async function updateCompanyMember(
       : prisma.user.findUniqueOrThrow({ where: { id: membership.userId } }),
     prisma.companyMembership.update({
       where: { id: membershipId },
-      data: { role: input.role, active: input.active },
+      data: { role: input.role, active: input.active, allowedScreens: input.allowedScreens },
       include: { user: true },
     }),
   ]);
@@ -147,5 +156,6 @@ export async function updateCompanyMember(
     email: updatedMembership.user.email,
     role: updatedMembership.role,
     active: updatedMembership.active,
+    allowedScreens: updatedMembership.allowedScreens,
   };
 }

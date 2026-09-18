@@ -38,15 +38,17 @@ export type SessionResult = {
   accessToken: string;
   refreshToken: string;
   refreshTokenExpiresAt: Date;
-  user: { id: string; name: string; email: string };
+  user: { id: string; name: string; email: string; imageUrl: string | null };
   company: { id: string; name: string; slug: string };
   role: Role;
+  allowedScreens: string[];
 };
 
 async function issueSession(userId: string, companyId: string, role: Role): Promise<SessionResult> {
-  const [user, company] = await Promise.all([
+  const [user, company, membership] = await Promise.all([
     prisma.user.findUniqueOrThrow({ where: { id: userId } }),
     prisma.company.findUniqueOrThrow({ where: { id: companyId } }),
+    prisma.companyMembership.findUniqueOrThrow({ where: { userId_companyId: { userId, companyId } } }),
   ]);
 
   const accessToken = signAccessToken({ sub: userId, companyId, role });
@@ -65,9 +67,10 @@ async function issueSession(userId: string, companyId: string, role: Role): Prom
     accessToken,
     refreshToken,
     refreshTokenExpiresAt: refreshTokenExpiryDate(),
-    user: { id: user.id, name: user.name, email: user.email },
+    user: { id: user.id, name: user.name, email: user.email, imageUrl: user.imageUrl },
     company: { id: company.id, name: company.name, slug: company.slug },
     role,
+    allowedScreens: membership.allowedScreens,
   };
 }
 
@@ -247,6 +250,7 @@ export async function googleAuth(input: { credential: string; companyId?: string
   let googleEmail: string;
   let googleName: string;
   let googleId: string;
+  let googleImageUrl: string | undefined;
 
   try {
     const client = new OAuth2Client(env.GOOGLE_CLIENT_ID);
@@ -259,6 +263,7 @@ export async function googleAuth(input: { credential: string; companyId?: string
     googleEmail = payload.email;
     googleName = payload.name || payload.given_name || payload.email;
     googleId = payload.sub;
+    googleImageUrl = payload.picture;
   } catch {
     throw HttpError.unauthorized('Credencial Google inválida ou expirada.');
   }
@@ -281,7 +286,7 @@ export async function googleAuth(input: { credential: string; companyId?: string
     if (!company) throw HttpError.notFound('Empresa não encontrada.');
 
     const newUser = await prisma.user.create({
-      data: { name: googleName, email: googleEmail, googleId },
+      data: { name: googleName, email: googleEmail, googleId, imageUrl: googleImageUrl },
     });
     await prisma.companyMembership.create({
       data: { userId: newUser.id, companyId: input.companyId, role: Role.EMPLOYEE, approvalStatus: MembershipStatus.PENDING },
@@ -289,8 +294,11 @@ export async function googleAuth(input: { credential: string; companyId?: string
     return { status: 'pending' };
   }
 
-  if (!user.googleId) {
-    await prisma.user.update({ where: { id: user.id }, data: { googleId } });
+  const userUpdates: { googleId?: string; imageUrl?: string } = {};
+  if (!user.googleId) userUpdates.googleId = googleId;
+  if (googleImageUrl && googleImageUrl !== user.imageUrl) userUpdates.imageUrl = googleImageUrl;
+  if (Object.keys(userUpdates).length > 0) {
+    await prisma.user.update({ where: { id: user.id }, data: userUpdates });
   }
 
   const activeMemberships = user.memberships.filter(
@@ -375,9 +383,10 @@ export async function refreshSession(rawRefreshToken: string): Promise<SessionRe
     accessToken,
     refreshToken: newRefreshToken,
     refreshTokenExpiresAt: refreshTokenExpiryDate(),
-    user: { id: user.id, name: user.name, email: user.email },
+    user: { id: user.id, name: user.name, email: user.email, imageUrl: user.imageUrl },
     company: { id: company.id, name: company.name, slug: company.slug },
     role: membership.role,
+    allowedScreens: membership.allowedScreens,
   };
 }
 

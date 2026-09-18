@@ -9,7 +9,6 @@ import { openapiSpec } from './docs/openapi';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import { apiRateLimiter } from './middlewares/rateLimit.middleware';
 import { authRouter } from './modules/auth/auth.routes';
-import { campaignsRouter } from './modules/campaigns/campaigns.routes';
 import { leadsRouter } from './modules/leads/leads.routes';
 import { companiesRouter } from './modules/companies/companies.routes';
 import { settingsRouter } from './modules/settings/settings.routes';
@@ -41,7 +40,6 @@ app.use('/api/auth', authRouter);
 app.use('/api/companies', companiesRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/leads', leadsRouter);
-app.use('/api/campaigns', campaignsRouter);
 app.use('/api/settings', settingsRouter);
 
 app.use(notFoundHandler);

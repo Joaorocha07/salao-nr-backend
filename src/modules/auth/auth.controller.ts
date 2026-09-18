@@ -26,6 +26,7 @@ function sessionResponse(res: Response, session: authService.SessionResult) {
     user: session.user,
     company: session.company,
     role: session.role,
+    allowedScreens: session.allowedScreens,
   });
 }
 
@@ -92,11 +93,15 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
 
 export const me = asyncHandler(async (req: Request, res: Response) => {
   const auth = req.auth!;
-  const [user, company] = await Promise.all([
-    prisma.user.findUniqueOrThrow({ where: { id: auth.userId }, select: { id: true, name: true, email: true } }),
+  const [user, company, membership] = await Promise.all([
+    prisma.user.findUniqueOrThrow({ where: { id: auth.userId }, select: { id: true, name: true, email: true, imageUrl: true } }),
     prisma.company.findUniqueOrThrow({ where: { id: auth.companyId }, select: { id: true, name: true, slug: true } }),
+    prisma.companyMembership.findUniqueOrThrow({
+      where: { userId_companyId: { userId: auth.userId, companyId: auth.companyId } },
+      select: { allowedScreens: true },
+    }),
   ]);
-  return res.json({ user, company, role: auth.role });
+  return res.json({ user, company, role: auth.role, allowedScreens: membership.allowedScreens });
 });
 
 export const myCompanies = asyncHandler(async (req: Request, res: Response) => {
