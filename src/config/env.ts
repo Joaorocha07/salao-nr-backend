@@ -11,7 +11,7 @@ const schema = z.object({
   JWT_REFRESH_SECRET: z.string().min(16, 'JWT_REFRESH_SECRET precisa ter pelo menos 16 caracteres'),
   JWT_PREAUTH_SECRET: z.string().min(16, 'JWT_PREAUTH_SECRET precisa ter pelo menos 16 caracteres'),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
-  JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
+  JWT_REFRESH_EXPIRES_IN: z.string().default('24h'),
   JWT_PREAUTH_EXPIRES_IN: z.string().default('5m'),
 
   REFRESH_COOKIE_NAME: z.string().default('nr_refresh_token'),
@@ -19,6 +19,8 @@ const schema = z.object({
     .string()
     .default('false')
     .transform((value) => value === 'true'),
+
+  GOOGLE_CLIENT_ID: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

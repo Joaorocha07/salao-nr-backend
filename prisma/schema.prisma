@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {
@@ -18,6 +19,12 @@ enum LeadStatus {
   FECHADO
   NAO_FECHOU
   ANTIGO
+}
+
+enum MembershipStatus {
+  PENDING
+  ACTIVE
+  REJECTED
 }
 
 // Uma empresa (ex.: as duas unidades do salão). Todo dado de negócio
@@ -40,12 +47,13 @@ model Company {
 }
 
 // Conta de usuário. O e-mail é único no sistema; o acesso a cada empresa
-// é controlado por CompanyMembership.
+// é controlado por CompanyMembership. passwordHash é nulo para contas Google.
 model User {
   id           String   @id @default(uuid())
   name         String
   email        String   @unique
-  passwordHash String
+  googleId     String?  @unique
+  passwordHash String?
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -57,14 +65,15 @@ model User {
 }
 
 // Vínculo do usuário com uma empresa específica + papel dentro dela.
-// É essa tabela que permite "a mesma pessoa, duas empresas, dados diferentes".
+// approvalStatus controla o fluxo de aprovação de auto-cadastro de funcionários.
 model CompanyMembership {
-  id        String   @id @default(uuid())
-  userId    String
-  companyId String
-  role      Role     @default(EMPLOYEE)
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
+  id             String           @id @default(uuid())
+  userId         String
+  companyId      String
+  role           Role             @default(EMPLOYEE)
+  active         Boolean          @default(true)
+  approvalStatus MembershipStatus @default(ACTIVE)
+  createdAt      DateTime         @default(now())
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -176,14 +185,14 @@ model ServiceRecord {
 }
 
 model Campaign {
-  id              String   @id @default(uuid())
-  companyId       String
-  name            String
-  date            String
-  message         String
-  mediaUrl        String?
-  recipientCount  Int      @default(0)
-  createdAt       DateTime @default(now())
+  id             String   @id @default(uuid())
+  companyId      String
+  name           String
+  date           String
+  message        String
+  mediaUrl       String?
+  recipientCount Int      @default(0)
+  createdAt      DateTime @default(now())
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 

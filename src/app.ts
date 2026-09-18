@@ -11,6 +11,7 @@ import { apiRateLimiter } from './middlewares/rateLimit.middleware';
 import { authRouter } from './modules/auth/auth.routes';
 import { campaignsRouter } from './modules/campaigns/campaigns.routes';
 import { leadsRouter } from './modules/leads/leads.routes';
+import { companiesRouter } from './modules/companies/companies.routes';
 import { settingsRouter } from './modules/settings/settings.routes';
 import { usersRouter } from './modules/users/users.routes';
 
@@ -37,6 +38,7 @@ app.use('/docs', helmet({ contentSecurityPolicy: false }), swaggerUi.serve, swag
 app.get('/docs.json', (_req, res) => res.json(openapiSpec));
 
 app.use('/api/auth', authRouter);
+app.use('/api/companies', companiesRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/leads', leadsRouter);
 app.use('/api/campaigns', campaignsRouter);

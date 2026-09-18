@@ -29,9 +29,19 @@ function sessionResponse(res: Response, session: authService.SessionResult) {
   });
 }
 
+export const publicCompanies = asyncHandler(async (_req: Request, res: Response) => {
+  const companies = await authService.listPublicCompanies();
+  return res.json({ companies });
+});
+
 export const register = asyncHandler(async (req: Request, res: Response) => {
   const session = await authService.registerAdminWithCompany(req.body);
   return sessionResponse(res.status(201), session);
+});
+
+export const registerEmployee = asyncHandler(async (req: Request, res: Response) => {
+  await authService.registerEmployee(req.body);
+  return res.status(201).json({ message: 'Cadastro enviado com sucesso. Aguarde a aprovação do administrador.' });
 });
 
 export const login = asyncHandler(async (req: Request, res: Response) => {
@@ -45,6 +55,25 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
 export const selectCompany = asyncHandler(async (req: Request, res: Response) => {
   const session = await authService.selectCompany(req.body);
   return sessionResponse(res, session);
+});
+
+export const switchCompany = asyncHandler(async (req: Request, res: Response) => {
+  const session = await authService.switchCompanySession(req.auth!.userId, req.body.companyId);
+  return sessionResponse(res, session);
+});
+
+export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
+  const result = await authService.googleAuth(req.body);
+
+  if (result.status === 'ok') return sessionResponse(res, result.session);
+  if (result.status === 'select-company') {
+    return res.json({ status: 'select-company', preAuthToken: result.preAuthToken, companies: result.companies });
+  }
+  if (result.status === 'pending') {
+    return res.status(202).json({ status: 'pending', message: 'Cadastro enviado. Aguarde a aprovação do administrador.' });
+  }
+  // company-required
+  return res.status(200).json({ status: 'company-required', name: result.name, email: result.email });
 });
 
 export const refresh = asyncHandler(async (req: Request, res: Response) => {
@@ -73,7 +102,7 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
 export const myCompanies = asyncHandler(async (req: Request, res: Response) => {
   const auth = req.auth!;
   const memberships = await prisma.companyMembership.findMany({
-    where: { userId: auth.userId, active: true, company: { active: true } },
+    where: { userId: auth.userId, active: true, approvalStatus: 'ACTIVE', company: { active: true } },
     include: { company: true },
   });
   return res.json({
@@ -84,10 +113,8 @@ export const myCompanies = asyncHandler(async (req: Request, res: Response) => {
 export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.requestPasswordReset(req.body.email);
   if (result && env.NODE_ENV !== 'production') {
-    // Facilita testes locais sem provedor de e-mail configurado.
     console.log(`[dev] Token de recuperação de senha para ${req.body.email}: ${result.token}`);
   }
-  // Sempre 200, mesmo se o e-mail não existir, para não revelar cadastros.
   return res.json({ message: 'Se o e-mail existir em nossa base, enviaremos instruções de recuperação.' });
 });
 

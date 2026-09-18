@@ -1,4 +1,4 @@
-import { Role } from '@prisma/client';
+import { MembershipStatus, Role } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { HttpError } from '../../lib/httpError';
 import { hashPassword } from '../../lib/password';
@@ -6,7 +6,7 @@ import { generateOpaqueToken } from '../../lib/jwt';
 
 export async function listCompanyMembers(companyId: string) {
   const memberships = await prisma.companyMembership.findMany({
-    where: { companyId },
+    where: { companyId, approvalStatus: MembershipStatus.ACTIVE },
     include: { user: true },
     orderBy: { createdAt: 'asc' },
   });
@@ -21,6 +21,58 @@ export async function listCompanyMembers(companyId: string) {
   }));
 }
 
+export async function listPendingMembers(companyId: string) {
+  const memberships = await prisma.companyMembership.findMany({
+    where: { companyId, approvalStatus: MembershipStatus.PENDING },
+    include: { user: true },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return memberships.map((m) => ({
+    membershipId: m.id,
+    id: m.user.id,
+    name: m.user.name,
+    email: m.user.email,
+    role: m.role,
+    createdAt: m.createdAt.toISOString(),
+  }));
+}
+
+export async function approveMember(companyId: string, membershipId: string) {
+  const membership = await prisma.companyMembership.findFirst({
+    where: { id: membershipId, companyId, approvalStatus: MembershipStatus.PENDING },
+    include: { user: true },
+  });
+  if (!membership) throw HttpError.notFound('Solicitação não encontrada.');
+
+  const updated = await prisma.companyMembership.update({
+    where: { id: membershipId },
+    data: { approvalStatus: MembershipStatus.ACTIVE },
+    include: { user: true },
+  });
+
+  return {
+    membershipId: updated.id,
+    id: updated.user.id,
+    name: updated.user.name,
+    email: updated.user.email,
+    role: updated.role,
+    active: updated.active,
+  };
+}
+
+export async function rejectMember(companyId: string, membershipId: string) {
+  const membership = await prisma.companyMembership.findFirst({
+    where: { id: membershipId, companyId, approvalStatus: MembershipStatus.PENDING },
+  });
+  if (!membership) throw HttpError.notFound('Solicitação não encontrada.');
+
+  await prisma.companyMembership.update({
+    where: { id: membershipId },
+    data: { approvalStatus: MembershipStatus.REJECTED, active: false },
+  });
+}
+
 export async function addCompanyMember(
   companyId: string,
   input: { name: string; email: string; role: Role; password?: string },
@@ -28,9 +80,6 @@ export async function addCompanyMember(
   let user = await prisma.user.findUnique({ where: { email: input.email } });
 
   if (!user) {
-    // Sem senha definida, geramos uma temporária aleatória: o acesso real
-    // se dá pelo fluxo de "esqueci minha senha" (a integração de convite
-    // por e-mail é um ponto de extensão futuro).
     const passwordHash = await hashPassword(input.password ?? generateOpaqueToken());
     user = await prisma.user.create({ data: { name: input.name, email: input.email, passwordHash } });
   } else {
@@ -41,7 +90,7 @@ export async function addCompanyMember(
   }
 
   const membership = await prisma.companyMembership.create({
-    data: { userId: user.id, companyId, role: input.role },
+    data: { userId: user.id, companyId, role: input.role, approvalStatus: MembershipStatus.ACTIVE },
     include: { user: true },
   });
 
@@ -57,7 +106,7 @@ export async function addCompanyMember(
 
 async function protectLastActiveAdmin(companyId: string, membershipId: string) {
   const activeAdmins = await prisma.companyMembership.count({
-    where: { companyId, role: Role.ADMIN, active: true },
+    where: { companyId, role: Role.ADMIN, active: true, approvalStatus: MembershipStatus.ACTIVE },
   });
   const target = await prisma.companyMembership.findFirst({ where: { id: membershipId, companyId } });
   if (target?.role === Role.ADMIN && target.active && activeAdmins <= 1) {
@@ -70,7 +119,10 @@ export async function updateCompanyMember(
   membershipId: string,
   input: { name?: string; role?: Role; active?: boolean },
 ) {
-  const membership = await prisma.companyMembership.findFirst({ where: { id: membershipId, companyId }, include: { user: true } });
+  const membership = await prisma.companyMembership.findFirst({
+    where: { id: membershipId, companyId, approvalStatus: MembershipStatus.ACTIVE },
+    include: { user: true },
+  });
   if (!membership) throw HttpError.notFound('Usuário não encontrado nesta empresa.');
 
   if (input.active === false || input.role === Role.EMPLOYEE) {
@@ -78,13 +130,12 @@ export async function updateCompanyMember(
   }
 
   const [, updatedMembership] = await prisma.$transaction([
-    input.name ? prisma.user.update({ where: { id: membership.userId }, data: { name: input.name } }) : prisma.user.findUniqueOrThrow({ where: { id: membership.userId } }),
+    input.name
+      ? prisma.user.update({ where: { id: membership.userId }, data: { name: input.name } })
+      : prisma.user.findUniqueOrThrow({ where: { id: membership.userId } }),
     prisma.companyMembership.update({
       where: { id: membershipId },
-      data: {
-        role: input.role,
-        active: input.active,
-      },
+      data: { role: input.role, active: input.active },
       include: { user: true },
     }),
   ]);

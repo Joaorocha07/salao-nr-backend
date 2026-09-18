@@ -12,3 +12,7 @@ usersRouter.use(authenticate);
 usersRouter.get('/', controller.list);
 usersRouter.post('/', requireRole(Role.ADMIN), validate(createUserSchema), controller.create);
 usersRouter.patch('/:membershipId', requireRole(Role.ADMIN), validate(updateUserSchema), controller.update);
+
+usersRouter.get('/pending', requireRole(Role.ADMIN), controller.listPending);
+usersRouter.post('/:membershipId/approve', requireRole(Role.ADMIN), controller.approve);
+usersRouter.post('/:membershipId/reject', requireRole(Role.ADMIN), controller.reject);
