@@ -16,6 +16,10 @@ import { usersRouter } from './modules/users/users.routes';
 
 export const app = express();
 
+// Em producao no Render, confia no proxy imediatamente a frente da API.
+// Isso permite que os rate limiters identifiquem o IP de cada cliente.
+app.set('trust proxy', env.NODE_ENV === 'production' ? 1 : false);
+
 app.disable('x-powered-by');
 app.use(helmet());
 app.use(
