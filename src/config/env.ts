@@ -5,6 +5,7 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL é obrigatório'),
   PORT: z.coerce.number().default(3333),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  RENDER: z.string().optional().transform((value) => value === 'true'),
   CORS_ORIGIN: z.string().default('http://localhost:3000'),
 
   JWT_ACCESS_SECRET: z.string().min(16, 'JWT_ACCESS_SECRET precisa ter pelo menos 16 caracteres'),

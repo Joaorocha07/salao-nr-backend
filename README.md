@@ -54,6 +54,16 @@ npm run dev                   # inicia em http://localhost:3333
 Login de exemplo criado pelo seed: `contato@espaconr.com.br` /
 `MudeEstaSenha123` (troque a senha em produção).
 
+## Deploy no Render
+
+- Configure `NODE_ENV=production` nas variáveis de ambiente do serviço.
+- O Build Command deve instalar as dependências, gerar o Prisma Client e compilar
+  o TypeScript: `npm ci --include=dev && npm run prisma:generate && npm run build`.
+- Use `node dist/server.js` como Start Command e `/health` como Health Check Path.
+- A API reconhece `RENDER=true` (definida automaticamente pela plataforma) e
+  confia em um proxy para identificar o IP do cliente nos rate limiters.
+- Após publicar alterações em `src/`, faça um novo deploy com build para atualizar `dist/`.
+
 ## Estrutura
 
 ```
