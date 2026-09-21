@@ -7,6 +7,7 @@ declare global {
         userId: string;
         companyId: string;
         role: Role;
+        isSuperAdmin: boolean;
       };
     }
   }

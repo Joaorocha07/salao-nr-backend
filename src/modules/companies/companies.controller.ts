@@ -6,3 +6,8 @@ export const create = asyncHandler(async (req: Request, res: Response) => {
   const company = await companiesService.createCompany(req.auth!.userId, req.body);
   return res.status(201).json({ company });
 });
+
+export const update = asyncHandler(async (req: Request, res: Response) => {
+  const company = await companiesService.updateCompany(req.auth!.userId, req.params.id, req.body);
+  return res.json({ company });
+});

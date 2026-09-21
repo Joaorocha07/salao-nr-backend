@@ -15,7 +15,7 @@ export function authenticate(req: Request, _res: Response, next: NextFunction) {
 
   try {
     const payload = verifyAccessToken(token);
-    req.auth = { userId: payload.sub, companyId: payload.companyId, role: payload.role };
+    req.auth = { userId: payload.sub, companyId: payload.companyId, role: payload.role, isSuperAdmin: payload.isSuperAdmin };
     next();
   } catch {
     next(HttpError.unauthorized('Token de acesso inválido ou expirado.'));

@@ -33,7 +33,7 @@ export const remove = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const schedule = asyncHandler(async (req: Request, res: Response) => {
-  const lead = await leadsService.scheduleAppointment(req.auth!.companyId, req.params.id, req.body.date, req.body.time);
+  const lead = await leadsService.scheduleAppointment(req.auth!.companyId, req.params.id, req.body.date, req.body.time, req.body.services);
   return res.json({ lead });
 });
 

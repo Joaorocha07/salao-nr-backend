@@ -97,20 +97,34 @@ export async function updateLead(
     data.status = input.status;
 
     if (input.status === LeadStatus.FECHADO) {
+      if (lead.appointmentDate && lead.appointmentTime) {
+        const scheduledAt = new Date(`${lead.appointmentDate}T${lead.appointmentTime}:00`);
+        if (!Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() > Date.now()) {
+          throw HttpError.badRequest(
+            `Este atendimento está agendado para ${lead.appointmentDate.split('-').reverse().join('/')} às ${lead.appointmentTime}. Não é possível marcar como fechado antes desse horário.`,
+          );
+        }
+      }
       data.activityDate = date;
-      data.appointmentDate = null;
-      data.appointmentTime = null;
       data.history = {
         create: {
           companyId,
-          service: (input.interests ?? lead.interests).join(' + '),
+          service: input.interests
+            ? input.interests.join(' + ')
+            : lead.appointmentServices.length
+              ? lead.appointmentServices.join(' + ')
+              : lead.interests.join(' + '),
           date,
           time: lead.appointmentTime ?? undefined,
         },
       };
+      data.appointmentDate = null;
+      data.appointmentTime = null;
+      data.appointmentServices = [];
     } else if (input.status !== LeadStatus.AGENDADO) {
       data.appointmentDate = null;
       data.appointmentTime = null;
+      data.appointmentServices = [];
     }
   }
 
@@ -122,11 +136,23 @@ export async function deleteLead(companyId: string, leadId: string) {
   await prisma.lead.delete({ where: { id: leadId } });
 }
 
-export async function scheduleAppointment(companyId: string, leadId: string, date: string, time: string) {
+export async function scheduleAppointment(companyId: string, leadId: string, date: string, time: string, services: string[]) {
   await findOwnedLead(companyId, leadId);
+
+  const scheduledAt = new Date(`${date}T${time}:00`);
+  if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now()) {
+    throw HttpError.badRequest('Não é possível agendar em uma data e horário que já passaram.');
+  }
+
   return prisma.lead.update({
     where: { id: leadId },
-    data: { status: LeadStatus.AGENDADO, appointmentDate: date, appointmentTime: time, activityDate: date },
+    data: {
+      status: LeadStatus.AGENDADO,
+      appointmentDate: date,
+      appointmentTime: time,
+      appointmentServices: services,
+      activityDate: date,
+    },
     include: includeRelations,
   });
 }
@@ -135,7 +161,7 @@ export async function cancelAppointment(companyId: string, leadId: string) {
   await findOwnedLead(companyId, leadId);
   return prisma.lead.update({
     where: { id: leadId },
-    data: { status: LeadStatus.NOVO_LEAD, appointmentDate: null, appointmentTime: null, activityDate: today() },
+    data: { status: LeadStatus.NOVO_LEAD, appointmentDate: null, appointmentTime: null, appointmentServices: [], activityDate: today() },
     include: includeRelations,
   });
 }

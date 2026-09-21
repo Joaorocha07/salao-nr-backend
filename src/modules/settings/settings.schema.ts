@@ -12,3 +12,7 @@ export const updateSettingsSchema = z.object({
   capturePhone: z.boolean().optional(),
   autoCreateLead: z.boolean().optional(),
 });
+
+export const addInterestSchema = z.object({
+  name: z.string().trim().min(1, 'Informe o nome do interesse.').max(40, 'Nome muito longo.'),
+});

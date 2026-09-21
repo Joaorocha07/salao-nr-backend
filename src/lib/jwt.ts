@@ -8,6 +8,7 @@ export type AccessTokenPayload = {
   sub: string; // userId
   companyId: string;
   role: Role;
+  isSuperAdmin: boolean;
 };
 
 export type PreAuthTokenPayload = {

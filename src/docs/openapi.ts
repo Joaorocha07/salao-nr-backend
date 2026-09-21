@@ -63,6 +63,7 @@ export const openapiSpec = {
           activityDate: { type: 'string', nullable: true },
           appointmentDate: { type: 'string', nullable: true },
           appointmentTime: { type: 'string', nullable: true },
+          appointmentServices: { type: 'array', items: { type: 'string' } },
           notes: { type: 'array', items: { $ref: '#/components/schemas/LeadNote' } },
           messages: { type: 'array', items: { $ref: '#/components/schemas/LeadMessage' } },
           history: { type: 'array', items: { $ref: '#/components/schemas/ServiceRecord' } },
@@ -104,6 +105,7 @@ export const openapiSpec = {
           captureName: { type: 'boolean' },
           capturePhone: { type: 'boolean' },
           autoCreateLead: { type: 'boolean' },
+          interests: { type: 'array', items: { type: 'string' } },
         },
       },
       Member: {
@@ -120,6 +122,17 @@ export const openapiSpec = {
               email: { type: 'string' },
             },
           },
+        },
+      },
+      MemberCompanyAccess: {
+        type: 'object',
+        properties: {
+          companyId: { type: 'string', format: 'uuid' },
+          companyName: { type: 'string' },
+          membershipId: { type: 'string', format: 'uuid', nullable: true },
+          role: { type: 'string', enum: ['ADMIN', 'EMPLOYEE'], nullable: true },
+          active: { type: 'boolean' },
+          manageable: { type: 'boolean', description: 'Se o requisitante pode conceder/revogar acesso a esta empresa' },
         },
       },
       Company: {
@@ -298,25 +311,26 @@ export const openapiSpec = {
       },
       post: {
         tags: ['Users'],
-        summary: 'Adiciona um membro à empresa atual (ADMIN)',
+        summary: 'Adiciona um membro a uma ou mais empresas (ADMIN)',
         requestBody: {
           required: true,
           content: {
             'application/json': {
               schema: {
                 type: 'object',
-                required: ['name', 'email'],
+                required: ['name', 'email', 'companyIds'],
                 properties: {
                   name: { type: 'string', minLength: 2 },
                   email: { type: 'string', format: 'email' },
-                  role: { type: 'string', enum: ['ADMIN', 'EMPLOYEE'], default: 'EMPLOYEE' },
+                  role: { type: 'string', enum: ['ADMIN', 'EMPLOYEE'], default: 'EMPLOYEE', description: 'ADMIN só pode ser atribuído pelo administrador master' },
                   password: { type: 'string', minLength: 8, description: 'Obrigatório se o e-mail ainda não existir como usuário no sistema' },
+                  companyIds: { type: 'array', items: { type: 'string', format: 'uuid' }, description: 'Empresas às quais o membro será vinculado; o requisitante precisa administrar todas elas (exceto administrador master)' },
                 },
               },
             },
           },
         },
-        responses: { '201': { content: { 'application/json': { schema: { type: 'object', properties: { member: { $ref: '#/components/schemas/Member' } } } } } }, '403': errorResponse, '400': errorResponse },
+        responses: { '201': { content: { 'application/json': { schema: { type: 'object', properties: { members: { type: 'array', items: { $ref: '#/components/schemas/Member' } } } } } } }, '403': errorResponse, '400': errorResponse },
       },
     },
     '/users/{membershipId}': {
@@ -332,6 +346,34 @@ export const openapiSpec = {
           },
         },
         responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { member: { $ref: '#/components/schemas/Member' } } } } } }, '403': errorResponse, '404': errorResponse },
+      },
+    },
+    '/users/{membershipId}/companies': {
+      get: {
+        tags: ['Users'],
+        summary: 'Lista, para um membro da empresa atual, o acesso dele a todas as empresas ativas (ADMIN)',
+        parameters: [{ name: 'membershipId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }],
+        responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { userId: { type: 'string', format: 'uuid' }, companies: { type: 'array', items: { $ref: '#/components/schemas/MemberCompanyAccess' } } } } } } }, '404': errorResponse },
+      },
+    },
+    '/users/{membershipId}/companies/{companyId}': {
+      post: {
+        tags: ['Users'],
+        summary: 'Concede a um membro da empresa atual acesso a outra empresa, como funcionário (ADMIN)',
+        parameters: [
+          { name: 'membershipId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          { name: 'companyId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        ],
+        responses: { '201': { content: { 'application/json': { schema: { type: 'object', properties: { userId: { type: 'string', format: 'uuid' }, companies: { type: 'array', items: { $ref: '#/components/schemas/MemberCompanyAccess' } } } } } } }, '403': errorResponse, '404': errorResponse, '409': errorResponse },
+      },
+      delete: {
+        tags: ['Users'],
+        summary: 'Revoga o acesso de um membro da empresa atual a outra empresa (ADMIN)',
+        parameters: [
+          { name: 'membershipId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+          { name: 'companyId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        ],
+        responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { userId: { type: 'string', format: 'uuid' }, companies: { type: 'array', items: { $ref: '#/components/schemas/MemberCompanyAccess' } } } } } } }, '403': errorResponse, '404': errorResponse },
       },
     },
     '/leads': {
@@ -406,7 +448,7 @@ export const openapiSpec = {
             },
           },
         },
-        responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { lead: { $ref: '#/components/schemas/Lead' } } } } } }, '404': errorResponse },
+        responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { lead: { $ref: '#/components/schemas/Lead' } } } } } }, '400': errorResponse, '404': errorResponse },
       },
       delete: {
         tags: ['Leads'],
@@ -424,7 +466,7 @@ export const openapiSpec = {
           required: true,
           content: {
             'application/json': {
-              schema: { type: 'object', required: ['date', 'time'], properties: { date: { type: 'string', example: '2025-03-20' }, time: { type: 'string', example: '14:30' } } },
+              schema: { type: 'object', required: ['date', 'time', 'services'], properties: { date: { type: 'string', example: '2025-03-20' }, time: { type: 'string', example: '14:30' }, services: { type: 'array', items: { type: 'string' }, example: ['Corte', 'Coloração'] } } },
             },
           },
         },
@@ -506,6 +548,20 @@ export const openapiSpec = {
           },
         },
         responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { settings: { $ref: '#/components/schemas/CompanySettings' } } } } } }, '403': errorResponse },
+      },
+    },
+    '/settings/interests': {
+      post: {
+        tags: ['Settings'],
+        summary: 'Cadastra um novo interesse/serviço no catálogo da empresa',
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } },
+            },
+          },
+        },
+        responses: { '201': { content: { 'application/json': { schema: { type: 'object', properties: { settings: { $ref: '#/components/schemas/CompanySettings' } } } } } }, '400': errorResponse },
       },
     },
   },

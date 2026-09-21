@@ -10,6 +10,7 @@ export const createUserSchema = z.object({
   role: z.nativeEnum(Role).default(Role.EMPLOYEE),
   password: z.string().min(8, 'A senha precisa ter pelo menos 8 caracteres.').optional(),
   allowedScreens: allowedScreensSchema.optional(),
+  companyIds: z.array(z.string().uuid()).min(1, 'Selecione ao menos uma empresa.'),
 });
 
 export const updateUserSchema = z.object({

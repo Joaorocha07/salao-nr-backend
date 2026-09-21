@@ -6,10 +6,14 @@ import { prisma } from '../../lib/prisma';
 import * as authService from './auth.service';
 
 function setRefreshCookie(res: Response, token: string, expiresAt: Date) {
+  // Frontend (Vercel) e backend (Render) são domínios diferentes, então o
+  // cookie precisa de SameSite=None para ser enviado em requisições cross-site.
+  // Navegadores exigem Secure sempre que SameSite=None é usado.
+  const crossSite = env.RENDER || env.NODE_ENV === 'production';
   res.cookie(env.REFRESH_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: env.COOKIE_SECURE,
-    sameSite: 'lax',
+    secure: crossSite ? true : env.COOKIE_SECURE,
+    sameSite: crossSite ? 'none' : 'lax',
     path: '/api/auth',
     expires: expiresAt,
   });
@@ -94,7 +98,10 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
 export const me = asyncHandler(async (req: Request, res: Response) => {
   const auth = req.auth!;
   const [user, company, membership] = await Promise.all([
-    prisma.user.findUniqueOrThrow({ where: { id: auth.userId }, select: { id: true, name: true, email: true, imageUrl: true } }),
+    prisma.user.findUniqueOrThrow({
+      where: { id: auth.userId },
+      select: { id: true, name: true, email: true, imageUrl: true, isSuperAdmin: true },
+    }),
     prisma.company.findUniqueOrThrow({ where: { id: auth.companyId }, select: { id: true, name: true, slug: true } }),
     prisma.companyMembership.findUniqueOrThrow({
       where: { userId_companyId: { userId: auth.userId, companyId: auth.companyId } },

@@ -16,3 +16,7 @@ usersRouter.patch('/:membershipId', requireRole(Role.ADMIN), validate(updateUser
 usersRouter.get('/pending', requireRole(Role.ADMIN), controller.listPending);
 usersRouter.post('/:membershipId/approve', requireRole(Role.ADMIN), controller.approve);
 usersRouter.post('/:membershipId/reject', requireRole(Role.ADMIN), controller.reject);
+
+usersRouter.get('/:membershipId/companies', requireRole(Role.ADMIN), controller.listCompanies);
+usersRouter.post('/:membershipId/companies/:companyId', requireRole(Role.ADMIN), controller.grantCompany);
+usersRouter.delete('/:membershipId/companies/:companyId', requireRole(Role.ADMIN), controller.revokeCompany);

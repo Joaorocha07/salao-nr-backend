@@ -21,6 +21,7 @@ export const updateLeadSchema = z.object({
 export const scheduleAppointmentSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data inválida.'),
   time: z.string().regex(/^\d{2}:\d{2}$/, 'Horário inválido.'),
+  services: z.array(z.string().trim().min(1)).min(1, 'Selecione pelo menos um serviço para o agendamento.'),
 });
 
 export const addNoteSchema = z.object({

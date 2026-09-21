@@ -9,7 +9,12 @@ const createCompanySchema = z.object({
   name: z.string().trim().min(2, 'Informe o nome da empresa.'),
 });
 
+const updateCompanySchema = z.object({
+  name: z.string().trim().min(2, 'Informe o nome da empresa.'),
+});
+
 export const companiesRouter = Router();
 
 companiesRouter.use(authenticate);
 companiesRouter.post('/', requireRole(Role.ADMIN), validate(createCompanySchema), controller.create);
+companiesRouter.patch('/:id', validate(updateCompanySchema), controller.update);

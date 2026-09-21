@@ -38,7 +38,7 @@ export type SessionResult = {
   accessToken: string;
   refreshToken: string;
   refreshTokenExpiresAt: Date;
-  user: { id: string; name: string; email: string; imageUrl: string | null };
+  user: { id: string; name: string; email: string; imageUrl: string | null; isSuperAdmin: boolean };
   company: { id: string; name: string; slug: string };
   role: Role;
   allowedScreens: string[];
@@ -51,7 +51,7 @@ async function issueSession(userId: string, companyId: string, role: Role): Prom
     prisma.companyMembership.findUniqueOrThrow({ where: { userId_companyId: { userId, companyId } } }),
   ]);
 
-  const accessToken = signAccessToken({ sub: userId, companyId, role });
+  const accessToken = signAccessToken({ sub: userId, companyId, role, isSuperAdmin: user.isSuperAdmin });
   const refreshToken = generateOpaqueToken();
 
   await prisma.refreshToken.create({
@@ -67,11 +67,42 @@ async function issueSession(userId: string, companyId: string, role: Role): Prom
     accessToken,
     refreshToken,
     refreshTokenExpiresAt: refreshTokenExpiryDate(),
-    user: { id: user.id, name: user.name, email: user.email, imageUrl: user.imageUrl },
+    user: { id: user.id, name: user.name, email: user.email, imageUrl: user.imageUrl, isSuperAdmin: user.isSuperAdmin },
     company: { id: company.id, name: company.name, slug: company.slug },
     role,
     allowedScreens: membership.allowedScreens,
   };
+}
+
+export const MAX_COMPANIES = 2;
+
+async function assertCanCreateCompany(): Promise<void> {
+  const count = await prisma.company.count({ where: { active: true } });
+  if (count >= MAX_COMPANIES) {
+    throw HttpError.forbidden('Limite de empresas cadastradas atingido.');
+  }
+}
+
+// Super-admins têm ADMIN garantido em toda empresa ativa, mesmo em empresas
+// criadas depois de virarem super-admin — por isso essa sincronização roda
+// a cada login/refresh em vez de só uma vez.
+async function ensureSuperAdminMemberships(userId: string): Promise<void> {
+  const companies = await prisma.company.findMany({ where: { active: true }, select: { id: true } });
+  await Promise.all(
+    companies.map((company) =>
+      prisma.companyMembership.upsert({
+        where: { userId_companyId: { userId, companyId: company.id } },
+        update: { role: Role.ADMIN, active: true, approvalStatus: MembershipStatus.ACTIVE },
+        create: {
+          userId,
+          companyId: company.id,
+          role: Role.ADMIN,
+          active: true,
+          approvalStatus: MembershipStatus.ACTIVE,
+        },
+      }),
+    ),
+  );
 }
 
 export async function listPublicCompanies() {
@@ -85,6 +116,8 @@ export async function listPublicCompanies() {
 export async function registerAdminWithCompany(input: { companyName: string; name: string; email: string; password: string }) {
   const existing = await prisma.user.findUnique({ where: { email: input.email } });
   if (existing) throw HttpError.conflict('Este e-mail já está cadastrado.');
+
+  await assertCanCreateCompany();
 
   const passwordHash = await hashPassword(input.password);
   const slug = await uniqueSlug(input.companyName);
@@ -164,6 +197,14 @@ export async function login(input: { email: string; password: string }): Promise
 
   const passwordMatches = await comparePassword(input.password, user.passwordHash);
   if (!passwordMatches) throw invalidCredentials();
+
+  if (user.isSuperAdmin) {
+    await ensureSuperAdminMemberships(user.id);
+    user.memberships = await prisma.companyMembership.findMany({
+      where: { userId: user.id, active: true },
+      include: { company: true },
+    });
+  }
 
   const pendingMemberships = user.memberships.filter(
     (m) => m.approvalStatus === MembershipStatus.PENDING && m.company.active,
@@ -301,6 +342,14 @@ export async function googleAuth(input: { credential: string; companyId?: string
     await prisma.user.update({ where: { id: user.id }, data: userUpdates });
   }
 
+  if (user.isSuperAdmin) {
+    await ensureSuperAdminMemberships(user.id);
+    user.memberships = await prisma.companyMembership.findMany({
+      where: { userId: user.id, active: true },
+      include: { company: true },
+    });
+  }
+
   const activeMemberships = user.memberships.filter(
     (m) => m.approvalStatus === MembershipStatus.ACTIVE && m.company.active,
   );
@@ -350,6 +399,9 @@ export async function refreshSession(rawRefreshToken: string): Promise<SessionRe
     throw HttpError.unauthorized('Sessão expirada. Faça login novamente.');
   }
 
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: stored.userId } });
+  if (user.isSuperAdmin) await ensureSuperAdminMemberships(user.id);
+
   const membership = await prisma.companyMembership.findUnique({
     where: { userId_companyId: { userId: stored.userId, companyId: stored.companyId } },
   });
@@ -373,17 +425,19 @@ export async function refreshSession(rawRefreshToken: string): Promise<SessionRe
     }),
   ]);
 
-  const accessToken = signAccessToken({ sub: stored.userId, companyId: stored.companyId, role: membership.role });
-  const [user, company] = await Promise.all([
-    prisma.user.findUniqueOrThrow({ where: { id: stored.userId } }),
-    prisma.company.findUniqueOrThrow({ where: { id: stored.companyId } }),
-  ]);
+  const accessToken = signAccessToken({
+    sub: stored.userId,
+    companyId: stored.companyId,
+    role: membership.role,
+    isSuperAdmin: user.isSuperAdmin,
+  });
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: stored.companyId } });
 
   return {
     accessToken,
     refreshToken: newRefreshToken,
     refreshTokenExpiresAt: refreshTokenExpiryDate(),
-    user: { id: user.id, name: user.name, email: user.email, imageUrl: user.imageUrl },
+    user: { id: user.id, name: user.name, email: user.email, imageUrl: user.imageUrl, isSuperAdmin: user.isSuperAdmin },
     company: { id: company.id, name: company.name, slug: company.slug },
     role: membership.role,
     allowedScreens: membership.allowedScreens,
