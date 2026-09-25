@@ -1,4 +1,4 @@
-import { LeadStatus, Prisma } from '@prisma/client';
+import { AppointmentEventType, LeadStatus, Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { HttpError } from '../../lib/httpError';
 
@@ -48,7 +48,7 @@ export async function getLead(companyId: string, leadId: string) {
 
 export async function createLead(
   companyId: string,
-  input: { name: string; phone: string; gender?: string; interests: string[]; status: LeadStatus },
+  input: { name: string; phone: string; gender?: string; interests: string[]; status: LeadStatus; whatsappId?: string },
 ) {
   const date = today();
   const lead = await prisma.lead.create({
@@ -56,6 +56,7 @@ export async function createLead(
       companyId,
       name: input.name,
       phone: input.phone,
+      whatsappId: input.whatsappId,
       gender: input.gender,
       interests: input.interests,
       status: input.status,
@@ -121,10 +122,29 @@ export async function updateLead(
       data.appointmentDate = null;
       data.appointmentTime = null;
       data.appointmentServices = [];
+      data.appointmentReminderSentAt = null;
+      data.appointmentHourReminderSentAt = null;
+      data.appointmentBookedAt = null;
+      data.appointmentConfirmedAt = null;
     } else if (input.status !== LeadStatus.AGENDADO) {
       data.appointmentDate = null;
       data.appointmentTime = null;
       data.appointmentServices = [];
+      data.appointmentReminderSentAt = null;
+      data.appointmentHourReminderSentAt = null;
+      data.appointmentBookedAt = null;
+      data.appointmentConfirmedAt = null;
+      // Tirou da etapa Agendado (ex.: arrastou no Kanban para "Não fechou"): conta como cancelamento.
+      const previous = activeAppointment(lead);
+      if (previous) {
+        const [updated] = await prisma.$transaction([
+          prisma.lead.update({ where: { id: leadId }, data, include: includeRelations }),
+          prisma.appointmentEvent.create({
+            data: { companyId, leadId, type: AppointmentEventType.CANCELADO, date: previous.date, time: previous.time, services: previous.services, source: 'crm' },
+          }),
+        ]);
+        return updated;
+      }
     }
   }
 
@@ -136,33 +156,110 @@ export async function deleteLead(companyId: string, leadId: string) {
   await prisma.lead.delete({ where: { id: leadId } });
 }
 
-export async function scheduleAppointment(companyId: string, leadId: string, date: string, time: string, services: string[]) {
-  await findOwnedLead(companyId, leadId);
+// Quem fez a alteração no agendamento: o bot do WhatsApp ou a equipe pelo CRM.
+export type AppointmentSource = 'bot' | 'crm';
+
+// Agendamento ativo que ainda não passou (remarcar/cancelar só fazem sentido sobre ele).
+function activeAppointment(lead: { status: LeadStatus; appointmentDate: string | null; appointmentTime: string | null; appointmentServices: string[] }) {
+  if (lead.status !== LeadStatus.AGENDADO || !lead.appointmentDate) return null;
+  return { date: lead.appointmentDate, time: lead.appointmentTime, services: lead.appointmentServices };
+}
+
+export async function scheduleAppointment(companyId: string, leadId: string, date: string, time: string, services: string[], source: AppointmentSource = 'crm') {
+  const lead = await findOwnedLead(companyId, leadId);
 
   const scheduledAt = new Date(`${date}T${time}:00`);
   if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() < Date.now()) {
     throw HttpError.badRequest('Não é possível agendar em uma data e horário que já passaram.');
   }
 
-  return prisma.lead.update({
-    where: { id: leadId },
-    data: {
-      status: LeadStatus.AGENDADO,
-      appointmentDate: date,
-      appointmentTime: time,
-      appointmentServices: services,
-      activityDate: date,
-    },
-    include: includeRelations,
-  });
+  const previous = activeAppointment(lead);
+  const moved = previous && (previous.date !== date || previous.time !== time);
+  const [updated] = await prisma.$transaction([
+    prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        status: LeadStatus.AGENDADO,
+        appointmentDate: date,
+        appointmentTime: time,
+        appointmentServices: services,
+        activityDate: date,
+        // Horário novo: precisa de novos lembretes e de uma nova confirmação.
+        appointmentBookedAt: new Date(),
+        appointmentReminderSentAt: null,
+        appointmentHourReminderSentAt: null,
+        appointmentConfirmedAt: null,
+      },
+      include: includeRelations,
+    }),
+    prisma.appointmentEvent.create({
+      data: {
+        companyId,
+        leadId,
+        type: moved ? AppointmentEventType.REMARCADO : AppointmentEventType.AGENDADO,
+        date,
+        time,
+        services,
+        previousDate: moved ? previous.date : null,
+        previousTime: moved ? previous.time : null,
+        source,
+      },
+    }),
+  ]);
+  return updated;
 }
 
-export async function cancelAppointment(companyId: string, leadId: string) {
-  await findOwnedLead(companyId, leadId);
-  return prisma.lead.update({
-    where: { id: leadId },
-    data: { status: LeadStatus.NOVO_LEAD, appointmentDate: null, appointmentTime: null, appointmentServices: [], activityDate: today() },
-    include: includeRelations,
+export async function cancelAppointment(companyId: string, leadId: string, source: AppointmentSource = 'crm') {
+  const lead = await findOwnedLead(companyId, leadId);
+  const previous = activeAppointment(lead);
+  const [updated] = await prisma.$transaction([
+    prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        status: LeadStatus.NOVO_LEAD,
+        appointmentDate: null,
+        appointmentTime: null,
+        appointmentServices: [],
+        appointmentBookedAt: null,
+        appointmentReminderSentAt: null,
+        appointmentHourReminderSentAt: null,
+        appointmentConfirmedAt: null,
+        activityDate: today(),
+      },
+      include: includeRelations,
+    }),
+    ...(previous ? [prisma.appointmentEvent.create({
+      data: { companyId, leadId, type: AppointmentEventType.CANCELADO, date: previous.date, time: previous.time, services: previous.services, source },
+    })] : []),
+  ]);
+  return updated;
+}
+
+// Confirmação de presença: pelo cliente no WhatsApp (bot) ou pela equipe (ex.: confirmou por telefone).
+export async function confirmAppointment(companyId: string, leadId: string, source: AppointmentSource = 'crm') {
+  const lead = await findOwnedLead(companyId, leadId);
+  const current = activeAppointment(lead);
+  if (!current) throw HttpError.badRequest('Este cliente não tem um agendamento ativo.');
+  const [updated] = await prisma.$transaction([
+    prisma.lead.update({
+      where: { id: leadId },
+      data: { appointmentConfirmedAt: new Date() },
+      include: includeRelations,
+    }),
+    prisma.appointmentEvent.create({
+      data: { companyId, leadId, type: AppointmentEventType.CONFIRMADO, date: current.date, time: current.time, services: current.services, source },
+    }),
+  ]);
+  return updated;
+}
+
+// Movimentações que envolvem o dia: horários marcados/remarcados/cancelados/
+// confirmados para ele e remarcações que saíram dele para outro dia.
+export async function listAppointmentEvents(companyId: string, date: string) {
+  return prisma.appointmentEvent.findMany({
+    where: { companyId, OR: [{ date }, { previousDate: date }] },
+    orderBy: { createdAt: 'asc' },
+    include: { lead: { select: { id: true, name: true, phone: true } } },
   });
 }
 

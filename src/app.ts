@@ -13,6 +13,7 @@ import { leadsRouter } from './modules/leads/leads.routes';
 import { companiesRouter } from './modules/companies/companies.routes';
 import { settingsRouter } from './modules/settings/settings.routes';
 import { usersRouter } from './modules/users/users.routes';
+import { whatsappRouter } from './modules/whatsapp/whatsapp.routes';
 
 export const app = express();
 
@@ -45,6 +46,7 @@ app.use('/api/companies', companiesRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/leads', leadsRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/whatsapp', whatsappRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

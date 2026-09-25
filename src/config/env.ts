@@ -22,6 +22,13 @@ const schema = z.object({
     .transform((value) => value === 'true'),
 
   GOOGLE_CLIENT_ID: z.string().optional(),
+
+  // Conexão com o WhatsApp Web. Desligue em cópias locais que usam o mesmo
+  // banco da produção, para não disputarem a sessão do WhatsApp.
+  WHATSAPP_ENABLED: z
+    .string()
+    .default('true')
+    .transform((value) => value === 'true'),
 });
 
 const parsed = schema.safeParse(process.env);

@@ -12,6 +12,11 @@ export const history = asyncHandler(async (req: Request, res: Response) => {
   return res.json({ records });
 });
 
+export const agendaEvents = asyncHandler(async (req: Request, res: Response) => {
+  const events = await leadsService.listAppointmentEvents(req.auth!.companyId, req.query.date as string);
+  return res.json({ events });
+});
+
 export const get = asyncHandler(async (req: Request, res: Response) => {
   const lead = await leadsService.getLead(req.auth!.companyId, req.params.id);
   return res.json({ lead });
@@ -39,6 +44,11 @@ export const schedule = asyncHandler(async (req: Request, res: Response) => {
 
 export const cancelAppointment = asyncHandler(async (req: Request, res: Response) => {
   const lead = await leadsService.cancelAppointment(req.auth!.companyId, req.params.id);
+  return res.json({ lead });
+});
+
+export const confirmAppointment = asyncHandler(async (req: Request, res: Response) => {
+  const lead = await leadsService.confirmAppointment(req.auth!.companyId, req.params.id);
   return res.json({ lead });
 });
 

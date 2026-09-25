@@ -37,10 +37,12 @@ model Company {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships   CompanyMembership[]
-  leads         Lead[]
-  settings      CompanySettings?
-  refreshTokens RefreshToken[]
+  memberships      CompanyMembership[]
+  leads            Lead[]
+  settings         CompanySettings?
+  refreshTokens    RefreshToken[]
+  whatsappSessions WhatsAppSession[]
+  whatsappAuth     WhatsAppAuth[]
 
   @@map("companies")
 }
@@ -138,6 +140,16 @@ model Lead {
   appointmentDate String?
   appointmentTime String?
   appointmentServices String[] @default([])
+  // Quando o horário foi marcado, lembretes enviados pelo bot (véspera e
+  // pouco antes) e resposta do cliente. Lembrete enviado sem confirmação =
+  // alerta amarelo na agenda. Zerados ao reagendar.
+  appointmentBookedAt           DateTime?
+  appointmentReminderSentAt     DateTime?
+  appointmentHourReminderSentAt DateTime?
+  appointmentConfirmedAt        DateTime?
+  // wa_id do contato no WhatsApp (ex.: 5531999999999). Preenchido quando o
+  // cliente conversa com o bot; é o destino das respostas enviadas pelo CRM.
+  whatsappId      String?
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
@@ -145,10 +157,43 @@ model Lead {
   notes    LeadNote[]
   messages LeadMessage[]
   history  ServiceRecord[]
+  appointmentEvents AppointmentEvent[]
 
   @@index([companyId])
   @@index([companyId, status])
+  @@index([companyId, whatsappId])
   @@map("leads")
+}
+
+enum AppointmentEventType {
+  AGENDADO
+  REMARCADO
+  CANCELADO
+  CONFIRMADO
+}
+
+// Histórico do agendamento: o lead só guarda o horário atual, então quem
+// cancelou ou remarcou para outro dia fica registrado aqui (resumo do dia na
+// agenda). date/time = horário afetado; previous* = horário anterior (remarcação).
+model AppointmentEvent {
+  id           String               @id @default(uuid())
+  companyId    String
+  leadId       String
+  type         AppointmentEventType
+  date         String
+  time         String?
+  services     String[]             @default([])
+  previousDate String?
+  previousTime String?
+  // "bot" (WhatsApp) ou "crm" (equipe pelo sistema).
+  source       String               @default("crm")
+  createdAt    DateTime             @default(now())
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([companyId, date])
+  @@index([companyId, previousDate])
+  @@map("appointment_events")
 }
 
 model LeadNote {
@@ -208,8 +253,86 @@ model CompanySettings {
   // empresa começa com os serviços padrão e pode cadastrar novos pelo modal
   // de leads.
   interests            String[] @default(["Corte", "Coloração", "Progressiva", "Manicure"])
+  // Quanto tempo cada serviço ocupa na agenda, em minutos: { "Corte": 45 }.
+  // Serviço sem duração usa botSlotMinutes.
+  serviceDurations     Json     @default("{}")
+
+  // Número conectado pelo QR Code (WhatsApp Web), ex.: 5531999999999.
+  whatsappPhone String?
+
+  // Configuração do chatbot do WhatsApp. As mensagens aceitam os marcadores
+  // {nome}, {servico}, {data} e {hora}. botWorkDays usa 0 = domingo ... 6 = sábado.
+  botEnabled             Boolean @default(true)
+  botSchedulingEnabled   Boolean @default(true)
+  // Opções do menu principal, na ordem em que aparecem: agendar, ver
+  // (meu agendamento), remarcar (remarcar ou cancelar), equipe.
+  botMenuOptions         String[] @default(["agendar", "ver", "remarcar", "equipe"])
+  botHandoffMessage      String  @default("Certo! Uma pessoa da nossa equipe vai te responder por aqui em instantes.")
+  botConfirmationMessage String  @default("Agendado! {servico} no dia {data} às {hora}. Até lá, {nome}!")
+  botOpeningTime         String  @default("09:00")
+  botClosingTime         String  @default("19:00")
+  botWorkDays            Int[]   @default([1, 2, 3, 4, 5, 6])
+  // Agenda oferecida pelo bot: horários de botSlotMinutes em botSlotMinutes a
+  // partir da abertura, com até botSlotCapacity atendimentos no mesmo horário.
+  // Cada agendamento ocupa a duração dos seus serviços (serviceDurations).
+  botSlotMinutes         Int     @default(60)
+  botSlotCapacity        Int     @default(1)
+  // Intervalo de almoço: nenhum atendimento pode cair dentro dele.
+  botLunchEnabled        Boolean @default(false)
+  botLunchStart          String  @default("12:00")
+  botLunchEnd            String  @default("13:00")
+  // Lembrete na véspera, enviado a partir de botReminderTime.
+  botReminderEnabled     Boolean @default(true)
+  botReminderTime        String  @default("10:00")
+  botReminderMessage     String  @default("Oi, {nome}! Passando para lembrar do seu horário amanhã: {servico} no dia {data} às {hora}. Está tudo certo?")
+  // Aviso botHourReminderMinutes antes do horário (o único, se o horário foi
+  // marcado no mesmo dia).
+  botHourReminderEnabled Boolean @default(true)
+  botHourReminderMinutes Int     @default(60)
+  botHourReminderMessage String  @default("Oi, {nome}! Seu horário é hoje às {hora}: {servico}. Te esperamos!")
+  // Quando a equipe responde (CRM ou celular), o bot fica em silêncio com o
+  // cliente. Se a equipe passar botHumanTimeoutMinutes sem mandar outra
+  // mensagem, o bot encerra o atendimento com botHumanEndMessage + menu.
+  botPauseOnStaffReply    Boolean @default(true)
+  botHumanTimeoutMinutes  Int     @default(10)
+  botHumanEndMessage      String  @default("Seu atendimento com a nossa equipe foi encerrado. Obrigado pelo contato!")
+  // Salva nome e número do cliente nos contatos do WhatsApp do salão.
+  saveContactOnWhatsApp  Boolean @default(true)
 
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
   @@map("company_settings")
+}
+
+// Estado da conversa em andamento com um número de WhatsApp (menu, etapas do
+// agendamento ou HUMAN = atendente assumiu e o bot fica em silêncio). Uma
+// linha por número por empresa; é apagada quando o fluxo termina ou expira.
+model WhatsAppSession {
+  id        String   @id @default(uuid())
+  companyId String
+  phone     String
+  step      String
+  data      Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, phone])
+  @@map("whatsapp_sessions")
+}
+
+// Sessão do WhatsApp Web (Baileys) de cada empresa: credenciais do aparelho
+// conectado e chaves de criptografia do Signal. Criptografado com lib/crypto.ts
+// — quem tiver esses dados consegue usar o WhatsApp da empresa.
+model WhatsAppAuth {
+  companyId String
+  key       String
+  value     String
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@id([companyId, key])
+  @@map("whatsapp_auth")
 }
