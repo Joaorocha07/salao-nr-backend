@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { env } from '../../config/env';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { HttpError } from '../../lib/httpError';
+import { appUrl, isMailConfigured, passwordResetEmail, sendMail } from '../../lib/mailer';
 import { prisma } from '../../lib/prisma';
 import * as authService from './auth.service';
 
@@ -124,8 +125,20 @@ export const myCompanies = asyncHandler(async (req: Request, res: Response) => {
 
 export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.requestPasswordReset(req.body.email);
-  if (result && env.NODE_ENV !== 'production') {
-    console.log(`[dev] Token de recuperação de senha para ${req.body.email}: ${result.token}`);
+  if (result) {
+    const link = `${appUrl()}/redefinir-senha?token=${result.token}`;
+    if (isMailConfigured()) {
+      // Em segundo plano: a resposta não pode demorar mais quando o e-mail existe
+      // (senão dá para descobrir quais e-mails estão cadastrados).
+      const email = passwordResetEmail(result.name, link, authService.PASSWORD_RESET_MINUTES);
+      sendMail({ to: req.body.email, ...email }).catch((err) => {
+        console.error(`Falha ao enviar o e-mail de recuperação de senha para ${req.body.email}:`, err);
+      });
+    } else if (env.NODE_ENV !== 'production') {
+      console.log(`[dev] SMTP não configurado. Link de recuperação de senha para ${req.body.email}: ${link}`);
+    } else {
+      console.error('SMTP não configurado: não foi possível enviar o e-mail de recuperação de senha.');
+    }
   }
   return res.json({ message: 'Se o e-mail existir em nossa base, enviaremos instruções de recuperação.' });
 });

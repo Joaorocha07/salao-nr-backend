@@ -29,6 +29,21 @@ const schema = z.object({
     .string()
     .default('true')
     .transform((value) => value === 'true'),
+
+  // Envio de e-mail (recuperação de senha). Sem SMTP_HOST, o link só aparece
+  // no terminal do servidor. SMTP_SECURE=true para a porta 465 (SSL).
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_SECURE: z
+    .string()
+    .default('false')
+    .transform((value) => value === 'true'),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  // Remetente, ex.: "Espaço NR <no-reply@seudominio.com>". Padrão: SMTP_USER.
+  MAIL_FROM: z.string().optional(),
+  // Endereço do frontend usado nos links dos e-mails. Padrão: primeiro CORS_ORIGIN.
+  APP_URL: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);

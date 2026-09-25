@@ -454,7 +454,9 @@ export async function revokeRefreshToken(rawRefreshToken: string): Promise<void>
 
 const PASSWORD_RESET_EXPIRY_MS = 30 * 60 * 1000;
 
-export async function requestPasswordReset(email: string): Promise<{ token: string } | null> {
+export const PASSWORD_RESET_MINUTES = PASSWORD_RESET_EXPIRY_MS / 60000;
+
+export async function requestPasswordReset(email: string): Promise<{ token: string; name: string } | null> {
   const user = await prisma.user.findUnique({ where: { email } });
   if (!user || !user.active) return null;
 
@@ -467,7 +469,7 @@ export async function requestPasswordReset(email: string): Promise<{ token: stri
     },
   });
 
-  return { token };
+  return { token, name: user.name };
 }
 
 export async function resetPassword(rawToken: string, newPassword: string): Promise<void> {
