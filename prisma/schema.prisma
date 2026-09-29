@@ -150,6 +150,13 @@ model Lead {
   // wa_id do contato no WhatsApp (ex.: 5531999999999). Preenchido quando o
   // cliente conversa com o bot; é o destino das respostas enviadas pelo CRM.
   whatsappId      String?
+  // Retorno automático do bot: quando a equipe marcou "Não fechou", última
+  // mensagem que o cliente mandou e a última mensagem de retorno enviada
+  // (followUpKind: "nao_fechou" ou "inativo").
+  notClosedAt         DateTime?
+  lastClientMessageAt DateTime?
+  followUpSentAt      DateTime?
+  followUpKind        String?
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
@@ -263,6 +270,9 @@ model CompanySettings {
   // Configuração do chatbot do WhatsApp. As mensagens aceitam os marcadores
   // {nome}, {servico}, {data} e {hora}. botWorkDays usa 0 = domingo ... 6 = sábado.
   botEnabled             Boolean @default(true)
+  // Quem o bot atende: "todos" (responde qualquer mensagem) ou "selecionados"
+  // (só conversa com quem ele procurou: retorno automático e lembretes).
+  botAudience            String  @default("todos")
   botSchedulingEnabled   Boolean @default(true)
   // Opções do menu principal, na ordem em que aparecem: agendar, ver
   // (meu agendamento), remarcar (remarcar ou cancelar), equipe.
@@ -296,6 +306,17 @@ model CompanySettings {
   botPauseOnStaffReply    Boolean @default(true)
   botHumanTimeoutMinutes  Int     @default(10)
   botHumanEndMessage      String  @default("Seu atendimento com a nossa equipe foi encerrado. Obrigado pelo contato!")
+  // Retorno automático: mensagem para quem a equipe marcou como "Não fechou"
+  // depois de botFollowUpNotClosedDays e para clientes antigos sem contato há
+  // botFollowUpInactiveDays. Enviado nos dias e horários de atendimento, no
+  // máximo botFollowUpDailyLimit por dia (evita bloqueio do número).
+  botFollowUpNotClosedEnabled Boolean @default(false)
+  botFollowUpNotClosedDays    Int     @default(15)
+  botFollowUpNotClosedMessage String  @default("Oi, {nome}! Tudo bem? Passando para saber se você ainda quer agendar um horário com a gente.")
+  botFollowUpInactiveEnabled  Boolean @default(false)
+  botFollowUpInactiveDays     Int     @default(25)
+  botFollowUpInactiveMessage  String  @default("Oi, {nome}! Sentimos sua falta por aqui. Que tal agendar um horário?")
+  botFollowUpDailyLimit       Int     @default(30)
   // Salva nome e número do cliente nos contatos do WhatsApp do salão.
   saveContactOnWhatsApp  Boolean @default(true)
 

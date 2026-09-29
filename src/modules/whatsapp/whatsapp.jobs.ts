@@ -1,8 +1,8 @@
 import { CompanySettings, Lead, LeadStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { toIsoDate } from './whatsapp.availability';
-import { endIdleHumanSession, humanSessionEndsAt, sendDayBeforeReminder, sendHourReminder, withContactLock } from './whatsapp.bot';
-import { isConnected, sendText } from './whatsapp.connection';
+import { FollowUpKind, endIdleHumanSession, humanSessionEndsAt, sendDayBeforeReminder, sendFollowUp, sendHourReminder, withContactLock } from './whatsapp.bot';
+import { findWhatsAppJid, isConnected, sendText } from './whatsapp.connection';
 
 // Tarefas periódicas do bot:
 // - Lembretes do agendamento:
@@ -14,6 +14,12 @@ import { isConnected, sendText } from './whatsapp.connection';
 //   O cliente responde confirmando, remarcando ou cancelando (etapa CONFIRM
 //   do bot); sem resposta, a agenda mostra o alerta amarelo.
 // - Atendimento pela equipe parado: encerra e devolve o cliente ao menu.
+// - Retorno automático: pergunta se o cliente quer agendar quando
+//   * a equipe marcou "Não fechou" há botFollowUpNotClosedDays dias;
+//   * um cliente antigo (já foi atendido) está há botFollowUpInactiveDays
+//     dias sem falar com o salão.
+//   Uma mensagem por vez: só volta a enviar se o cliente conversar de novo
+//   (ou for marcado outra vez como "Não fechou") e o prazo passar de novo.
 
 const CHECK_INTERVAL_MS = 60 * 1000;
 // Espaço entre um lembrete e outro, para não disparar tudo de uma vez.
@@ -124,11 +130,143 @@ export async function closeIdleHandoffs(): Promise<number> {
   return ended;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Uma mensagem de retorno a cada 5 minutos por empresa: muitas mensagens
+// seguidas para quem não puxou conversa parecem spam e podem bloquear o número.
+const FOLLOW_UP_INTERVAL_MS = 5 * 60 * 1000;
+// Cliente sem WhatsApp no número cadastrado: não tenta de novo por um dia.
+const noWhatsApp = new Map<string, number>();
+
+type FollowUpLead = Lead & { history: { date: string }[] };
+
+// "2026-09-01" -> meio-dia desse dia (datas do CRM não têm horário).
+const fromIsoDate = (date: string | null | undefined) => (date ? new Date(`${date}T12:00:00`) : null);
+const latest = (...dates: (Date | null)[]) => dates.reduce<Date | null>((max, d) => (d && (!max || d > max) ? d : max), null);
+
+// Último contato que conta para o prazo do retorno.
+function followUpSince(lead: FollowUpLead): Date | null {
+  if (lead.status === LeadStatus.NAO_FECHOU) return latest(lead.notClosedAt, lead.lastClientMessageAt);
+  return latest(lead.lastClientMessageAt, fromIsoDate(lead.activityDate), fromIsoDate(lead.appointmentDate), lead.createdAt, ...lead.history.map((h) => fromIsoDate(h.date)));
+}
+
+// Horário marcado que ainda não chegou: o cliente já vai voltar, sem retorno.
+function hasUpcomingAppointment(lead: Lead, now: Date): boolean {
+  if (lead.status !== LeadStatus.AGENDADO || !lead.appointmentDate) return false;
+  return new Date(`${lead.appointmentDate}T${lead.appointmentTime ?? '23:59'}:00`).getTime() > now.getTime();
+}
+
+// Qual retorno (se algum) está na hora de ir para este cliente.
+export function dueFollowUp(lead: FollowUpLead, settings: CompanySettings, now = new Date()): FollowUpKind | null {
+  if (hasUpcomingAppointment(lead, now)) return null;
+  let kind: FollowUpKind;
+  let days: number;
+  if (lead.status === LeadStatus.NAO_FECHOU) {
+    if (!settings.botFollowUpNotClosedEnabled || !lead.notClosedAt) return null;
+    kind = 'nao_fechou';
+    days = settings.botFollowUpNotClosedDays;
+  } else {
+    // Cliente antigo = já foi atendido pelo salão: fechou, está no histórico ou
+    // teve um horário que já passou (mesmo que a equipe não tenha marcado "Fechado").
+    const wasClient = lead.status === LeadStatus.FECHADO || lead.status === LeadStatus.ANTIGO || lead.status === LeadStatus.AGENDADO || lead.history.length > 0;
+    if (!settings.botFollowUpInactiveEnabled || !wasClient) return null;
+    kind = 'inativo';
+    days = settings.botFollowUpInactiveDays;
+  }
+  const since = followUpSince(lead);
+  if (!since) return null;
+  // Já mandou o retorno depois do último contato: espera o cliente responder.
+  if (lead.followUpSentAt && lead.followUpSentAt >= since) return null;
+  return now.getTime() - since.getTime() >= days * DAY_MS ? kind : null;
+}
+
+// Retorno só nos dias e horários de atendimento do salão.
+function withinBusinessHours(settings: CompanySettings, now: Date): boolean {
+  const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  return settings.botWorkDays.includes(now.getDay()) && time >= settings.botOpeningTime && time < settings.botClosingTime;
+}
+
+// Número do WhatsApp do cliente. Quem foi cadastrado à mão no CRM ainda não
+// tem whatsappId: confere se o telefone tem WhatsApp (resolve o nono dígito).
+async function contactFor(companyId: string, lead: Lead): Promise<string | null> {
+  if (lead.whatsappId) return lead.whatsappId;
+  const failedAt = noWhatsApp.get(lead.id);
+  if (failedAt && Date.now() - failedAt < DAY_MS) return null;
+  const digits = lead.phone.replace(/\D/g, '');
+  const full = digits.length === 10 || digits.length === 11 ? `55${digits}` : digits;
+  const jid = full.length >= 12 ? await findWhatsAppJid(companyId, full).catch(() => null) : null;
+  if (!jid) {
+    noWhatsApp.set(lead.id, Date.now());
+    return null;
+  }
+  return jid.split('@')[0];
+}
+
+let followingUp = false;
+
+export async function sendDueFollowUps(now = new Date()): Promise<number> {
+  if (followingUp) return 0;
+  followingUp = true;
+  let sent = 0;
+  try {
+    const companies = await prisma.companySettings.findMany({
+      where: { whatsappConnected: true, botEnabled: true, OR: [{ botFollowUpNotClosedEnabled: true }, { botFollowUpInactiveEnabled: true }] },
+    });
+
+    for (const settings of companies) {
+      if (!isConnected(settings.companyId) || !withinBusinessHours(settings, now)) continue;
+      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const sentToday = await prisma.lead.count({ where: { companyId: settings.companyId, followUpSentAt: { gte: startOfDay } } });
+      if (sentToday >= settings.botFollowUpDailyLimit) continue;
+      // Último retorno enviado (vem do banco, então vale mesmo se o servidor reiniciar).
+      const { _max: last } = await prisma.lead.aggregate({ where: { companyId: settings.companyId }, _max: { followUpSentAt: true } });
+      if (last.followUpSentAt && now.getTime() - last.followUpSentAt.getTime() < FOLLOW_UP_INTERVAL_MS) continue;
+
+      const statuses: LeadStatus[] = [
+        ...(settings.botFollowUpNotClosedEnabled ? [LeadStatus.NAO_FECHOU] : []),
+        ...(settings.botFollowUpInactiveEnabled ? [LeadStatus.FECHADO, LeadStatus.ANTIGO, LeadStatus.NOVO_LEAD, LeadStatus.AGENDADO] : []),
+      ];
+      const candidates = (await prisma.lead.findMany({
+        where: { companyId: settings.companyId, status: { in: statuses } },
+        include: { history: { select: { date: true } } },
+      }))
+        .filter((lead) => dueFollowUp(lead, settings, now))
+        // Quem está há mais tempo sem contato primeiro.
+        .sort((a, b) => (followUpSince(a)?.getTime() ?? 0) - (followUpSince(b)?.getTime() ?? 0));
+
+      // Só um por vez: o próximo sai na verificação de daqui a 5 minutos.
+      for (const candidate of candidates) {
+        try {
+          const contactId = await contactFor(settings.companyId, candidate);
+          if (!contactId) continue;
+          let delivered = false as boolean;
+          await withContactLock(settings.companyId, contactId, async () => {
+            // Pode ter conversado, agendado ou mudado de etapa enquanto esperava.
+            const lead = await prisma.lead.findUnique({ where: { id: candidate.id }, include: { history: { select: { date: true } } } });
+            const kind = lead && dueFollowUp(lead, settings, new Date());
+            if (!lead || !kind) return;
+            delivered = await sendFollowUp(settings.companyId, settings, lead, contactId, kind, (text) => sendText(settings.companyId, contactId, text));
+          });
+          if (!delivered) continue;
+          sent += 1;
+          break;
+        } catch (err) {
+          console.error('Falha ao enviar retorno do WhatsApp:', err);
+        }
+      }
+    }
+  } finally {
+    followingUp = false;
+  }
+  return sent;
+}
+
 export function startWhatsAppJobs(): void {
   const reminders = () => { sendDueReminders().catch((err) => console.error('Falha ao verificar lembretes do WhatsApp:', err)); };
   const handoffs = () => { closeIdleHandoffs().catch((err) => console.error('Falha ao verificar atendimentos do WhatsApp:', err)); };
+  const followUps = () => { sendDueFollowUps().catch((err) => console.error('Falha ao verificar retornos do WhatsApp:', err)); };
   // Primeira verificação depois que as conexões tiveram tempo de reabrir.
-  setTimeout(() => { reminders(); handoffs(); }, 60_000);
+  setTimeout(() => { reminders(); handoffs(); followUps(); }, 60_000);
   setInterval(reminders, CHECK_INTERVAL_MS);
   setInterval(handoffs, CHECK_INTERVAL_MS);
+  setInterval(followUps, CHECK_INTERVAL_MS);
 }

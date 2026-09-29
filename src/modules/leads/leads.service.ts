@@ -62,6 +62,8 @@ export async function createLead(
       status: input.status,
       date,
       activityDate: date,
+      notClosedAt: input.status === LeadStatus.NAO_FECHOU ? new Date() : undefined,
+      lastClientMessageAt: input.whatsappId ? new Date() : undefined,
       ...(input.status === LeadStatus.FECHADO
         ? { history: { create: { companyId, service: input.interests.join(' + '), date } } }
         : {}),
@@ -96,6 +98,8 @@ export async function updateLead(
 
   if (input.status && input.status !== lead.status) {
     data.status = input.status;
+    // Marcado como "Não fechou": o prazo do retorno automático do bot conta daqui.
+    if (input.status === LeadStatus.NAO_FECHOU) data.notClosedAt = new Date();
 
     if (input.status === LeadStatus.FECHADO) {
       if (lead.appointmentDate && lead.appointmentTime) {

@@ -16,12 +16,19 @@ import { freeTimes, isTimeFree, nextFreeDays, serviceDuration, toIsoDate, weekda
 //   1) confirmar  2) remarcar -> ASK_DATE  3) cancelar
 // "Ver meu agendamento" / "Remarcar ou cancelar" no menu abrem MANAGE, com as
 // mesmas ações para o próximo horário do cliente.
+// O retorno automático (whatsapp.jobs.ts) abre a etapa FOLLOW_UP:
+//   1) quero agendar  2) falar com a equipe  3) agora não
+// Com botAudience = "selecionados" o bot só responde quem está numa dessas
+// conversas que ele mesmo começou (retorno ou lembrete); as demais mensagens
+// chegam no CRM e ficam para a equipe.
 
-type BotStep = 'MENU' | 'ASK_NAME' | 'ASK_SERVICE' | 'ASK_DATE' | 'ASK_TIME' | 'CONFIRM' | 'MANAGE' | 'HUMAN';
+type BotStep = 'MENU' | 'ASK_NAME' | 'ASK_SERVICE' | 'ASK_DATE' | 'ASK_TIME' | 'CONFIRM' | 'MANAGE' | 'FOLLOW_UP' | 'HUMAN';
 type SessionData = {
   askName?: boolean;
   // MANAGE: ações oferecidas na última mensagem, na ordem numerada.
   manage?: string[];
+  // FOLLOW_UP: opções oferecidas na mensagem de retorno, na ordem numerada.
+  followUp?: string[];
   // MENU depois de concluir algo: o cliente pode escolher uma opção direto;
   // outra mensagem recebe as boas-vindas, como numa conversa nova.
   idle?: boolean;
@@ -125,7 +132,29 @@ function manageActionFromText(answer: string): ManageAction | undefined {
   return undefined;
 }
 
-export const CONFIRM_OPTIONS = `Responda com o número:\n\n1) Confirmar\n2) Remarcar\n3) Cancelar\n\n${BACK_OPTION}`;
+// Respostas à mensagem de retorno (etapa FOLLOW_UP).
+type FollowUpOption = 'agendar' | 'equipe' | 'nao';
+const FOLLOW_UP_LABELS: Record<FollowUpOption, string> = {
+  agendar: 'Quero agendar',
+  equipe: 'Falar com a equipe',
+  nao: 'Agora não, obrigado(a)',
+};
+
+function followUpOptionFromText(answer: string): FollowUpOption | undefined {
+  if (/\bnao\b|depois/.test(answer)) return 'nao';
+  if (/\bsim\b|quero|agend|marcar|pode ser|bora/.test(answer)) return 'agendar';
+  if (/atend|equipe|falar|pessoa|humano|valor|preco|quanto/.test(answer)) return 'equipe';
+  return undefined;
+}
+
+export function followUpOptions(settings: Pick<CompanySettings, 'botSchedulingEnabled'>): FollowUpOption[] {
+  return settings.botSchedulingEnabled ? ['agendar', 'equipe', 'nao'] : ['equipe', 'nao'];
+}
+
+// Bot no modo "só clientes selecionados": não puxa conversa com quem escreve.
+export const onlySelected = (settings: Pick<CompanySettings, 'botAudience'>) => settings.botAudience === 'selecionados';
+
+export const CONFIRM_OPTIONS =`Responda com o número:\n\n1) Confirmar\n2) Remarcar\n3) Cancelar\n\n${BACK_OPTION}`;
 const CONFIRM_WORDS = new Set(['1', 'sim', 's', 'confirmo', 'confirmar', 'confirmado', 'confirmada', 'ok', 'certo', 'tudo certo', 'pode ser', 'combinado', '👍']);
 const PLACEHOLDER_PREFIX = 'Cliente WhatsApp';
 
@@ -354,6 +383,12 @@ async function saveContact(ctx: BotContext, name: string) {
 export async function pauseBotForStaff(companyId: string, contactId: string) {
   const settings = await prisma.companySettings.findUnique({ where: { companyId } });
   if (settings && !settings.botPauseOnStaffReply) return;
+  if (settings && onlySelected(settings)) {
+    // Só atende quem o bot procurou: se ele não está conversando com esse
+    // cliente, não há o que pausar (nem mensagem de encerramento a mandar).
+    const session = await prisma.whatsAppSession.findUnique({ where: { companyId_phone: { companyId, phone: contactId } } });
+    if (!session || sessionExpired(session, settings)) return;
+  }
   await upsertSession(companyId, contactId, 'HUMAN', { staffAt: new Date().toISOString() });
 }
 
@@ -479,6 +514,29 @@ export async function sendHourReminder(companyId: string, settings: CompanySetti
   if (askConfirmation) await setSession(ctx, 'CONFIRM', {});
 }
 
+export type FollowUpKind = 'nao_fechou' | 'inativo';
+
+// Retorno automático (chamado por whatsapp.jobs.ts, dentro do lock do contato):
+// pergunta se o cliente quer agendar e abre a etapa FOLLOW_UP. Não interrompe
+// uma conversa em andamento; devolve false quando não enviou.
+export async function sendFollowUp(companyId: string, settings: CompanySettings, lead: Lead, contactId: string, kind: FollowUpKind, send: (text: string) => Promise<void>): Promise<boolean> {
+  const session = await prisma.whatsAppSession.findUnique({ where: { companyId_phone: { companyId, phone: contactId } } });
+  if (session && !sessionExpired(session, settings)) return false;
+
+  const ctx: BotContext = { companyId, waId: contactId, send, settings, leadId: lead.id };
+  const template = kind === 'nao_fechou' ? settings.botFollowUpNotClosedMessage : settings.botFollowUpInactiveMessage;
+  const lastService = await prisma.serviceRecord.findFirst({ where: { leadId: lead.id }, orderBy: { date: 'desc' } });
+  const text = fillTemplate(template, {
+    nome: isPlaceholderName(lead.name) ? '' : firstName(lead.name),
+    servico: lead.interests.join(' + ') || lastService?.service || '',
+  });
+  const options = followUpOptions(settings);
+  await say(ctx, blocks(text, 'Responda com o número:', numbered(options.map((o) => FOLLOW_UP_LABELS[o]))));
+  await prisma.lead.update({ where: { id: lead.id }, data: { followUpSentAt: new Date(), followUpKind: kind, whatsappId: contactId } });
+  await setSession(ctx, 'FOLLOW_UP', { followUp: options, askName: settings.captureName && isPlaceholderName(lead.name) });
+  return true;
+}
+
 // Lembrete enviado, cliente ainda não respondeu e o horário não passou.
 function awaitingConfirmation(lead: Lead | null): boolean {
   return Boolean(lead && lead.status === LeadStatus.AGENDADO && lead.appointmentDate && lead.appointmentDate >= toIsoDate(new Date())
@@ -487,7 +545,7 @@ function awaitingConfirmation(lead: Lead | null): boolean {
 
 function sessionExpired(session: HumanSession & { step: string }, settings: CompanySettings): boolean {
   if (session.step === 'HUMAN') return humanSessionEndsAt(session, settings).endsAt.getTime() <= Date.now();
-  const timeout = session.step === 'CONFIRM' ? CONFIRM_TIMEOUT_MS : FLOW_TIMEOUT_MS;
+  const timeout = session.step === 'CONFIRM' || session.step === 'FOLLOW_UP' ? CONFIRM_TIMEOUT_MS : FLOW_TIMEOUT_MS;
   return Date.now() - session.updatedAt.getTime() > timeout;
 }
 
@@ -509,6 +567,8 @@ async function processMessage(ctx: BotContext, message: IncomingWhatsAppMessage)
     if (profileName) await saveContact(ctx, profileName);
   }
   ctx.leadId = lead?.id ?? null;
+  // Cliente falou com o salão: o prazo do retorno automático recomeça.
+  if (lead) await prisma.lead.update({ where: { id: lead.id }, data: { lastClientMessageAt: new Date() } });
   await logMessage(ctx, text ?? `[${MEDIA_LABELS[message.mediaType ?? ''] ?? 'mensagem'}]`, false);
 
   let session = await prisma.whatsAppSession.findUnique({ where: { companyId_phone: { companyId: ctx.companyId, phone: ctx.waId } } });
@@ -528,6 +588,8 @@ async function processMessage(ctx: BotContext, message: IncomingWhatsAppMessage)
   if (!session) {
     // Respondeu o lembrete depois que a conversa expirou: ainda vale como resposta.
     if (text && lead && awaitingConfirmation(lead) && await answerConfirmation(ctx, lead, normalize(text))) return;
+    // Só clientes selecionados: quem escreve por conta própria fica para a equipe.
+    if (onlySelected(settings)) return;
 
     const name = firstName(isPlaceholderName(lead?.name) ? profileName : lead?.name);
     if (!settings.botSchedulingEnabled) {
@@ -583,12 +645,45 @@ async function advanceConversation(ctx: BotContext, step: BotStep, data: Session
       await say(ctx, settings.botHandoffMessage);
       return;
     }
+    if (data.idle && onlySelected(settings)) {
+      // Conversa que o bot começou já terminou: o resto fica com a equipe.
+      await clearSession(ctx);
+      return;
+    }
     if (data.idle) {
       // Conversa anterior já concluída ("obrigada", "oi" etc.): recomeça com as boas-vindas.
       await sendWelcome(ctx, isPlaceholderName(lead?.name) ? '' : firstName(lead?.name), { askName: data.askName });
       return;
     }
     await say(ctx, blocks('Não entendi.', mainMenu(settings)));
+    return;
+  }
+
+  if (step === 'FOLLOW_UP') {
+    const option = pickFromList(answer, data.followUp as FollowUpOption[] | undefined) ?? followUpOptionFromText(answer);
+    const name = isPlaceholderName(lead?.name) ? '' : firstName(lead?.name);
+    if (option === 'agendar' && settings.botSchedulingEnabled) {
+      if (data.askName) {
+        await setSession(ctx, 'ASK_NAME', { askName: true });
+        await say(ctx, blocks('Ótimo! Para fazer seu cadastro, qual é o seu nome?', BACK_OPTION));
+      } else {
+        await offerServices(ctx, {}, name ? `Que bom, ${name}!` : 'Que bom!');
+      }
+      return;
+    }
+    if (option === 'nao') {
+      await finishConversation(ctx);
+      await say(ctx, `Tudo bem${name ? `, ${name}` : ''}! Quando quiser marcar, é só chamar por aqui.`);
+      return;
+    }
+    if (option === 'equipe' || !/^\d{1,2}$/.test(answer)) {
+      // Pediu a equipe ou escreveu outra coisa (uma dúvida, um preço...): a equipe responde.
+      await setSession(ctx, 'HUMAN', { requestedAt: new Date().toISOString() });
+      await say(ctx, settings.botHandoffMessage);
+      return;
+    }
+    const options = (data.followUp as FollowUpOption[] | undefined) ?? followUpOptions(settings);
+    await say(ctx, blocks('Não entendi. Responda com o número:', numbered(options.map((o) => FOLLOW_UP_LABELS[o]))));
     return;
   }
 

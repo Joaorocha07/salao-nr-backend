@@ -38,6 +38,14 @@ export const updateSettingsSchema = z.object({
   botHumanTimeoutMinutes: z.number().int().min(1, 'Prazo mínimo de 1 minuto.').max(1440, 'Prazo máximo de 24 horas.').optional(),
   botHumanEndMessage: z.string().trim().min(1, 'Informe a mensagem de encerramento.').max(1000).optional(),
   saveContactOnWhatsApp: z.boolean().optional(),
+  botAudience: z.enum(['todos', 'selecionados']).optional(),
+  botFollowUpNotClosedEnabled: z.boolean().optional(),
+  botFollowUpNotClosedDays: z.number().int().min(1, 'Prazo mínimo de 1 dia.').max(365, 'Prazo máximo de 365 dias.').optional(),
+  botFollowUpNotClosedMessage: z.string().trim().min(1, 'Informe a mensagem para quem não fechou.').max(1000).optional(),
+  botFollowUpInactiveEnabled: z.boolean().optional(),
+  botFollowUpInactiveDays: z.number().int().min(1, 'Prazo mínimo de 1 dia.').max(365, 'Prazo máximo de 365 dias.').optional(),
+  botFollowUpInactiveMessage: z.string().trim().min(1, 'Informe a mensagem para clientes antigos.').max(1000).optional(),
+  botFollowUpDailyLimit: z.number().int().min(1, 'Envie ao menos 1 mensagem por dia.').max(200, 'Máximo de 200 mensagens por dia.').optional(),
 });
 
 export const addInterestSchema = z.object({
