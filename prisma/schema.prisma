@@ -271,8 +271,21 @@ model CompanySettings {
   // Serviço sem duração usa botSlotMinutes.
   serviceDurations     Json     @default("{}")
 
-  // Número conectado pelo QR Code (WhatsApp Web), ex.: 5531999999999.
+  // Número conectado (QR Code ou API oficial), ex.: 5531999999999.
   whatsappPhone String?
+  // Como o WhatsApp está conectado: "web" (QR Code, WhatsApp Web/Baileys) ou
+  // "cloud" (API oficial da Meta, WhatsApp Cloud API).
+  whatsappProvider String @default("web")
+  // API oficial: id do número e da conta (WABA) no Meta for Developers e o
+  // token de acesso (criptografado com lib/crypto.ts). O webhook encontra a
+  // empresa pelo id do número.
+  whatsappCloudPhoneNumberId String? @unique
+  whatsappCloudWabaId        String?
+  whatsappCloudToken         String?
+  // Modelos (templates) da Meta criados pelo CRM para cada mensagem automática
+  // que pode sair fora da janela de 24h: { "lembrete_vespera": { name,
+  // language, params: ["nome", "data"], text } }.
+  whatsappTemplates Json @default("{}")
 
   // Como o bot conversa com quem escreve por conta própria:
   //   "captura": só cadastra o cliente (perguntando o nome se não souber),

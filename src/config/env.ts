@@ -30,6 +30,13 @@ const schema = z.object({
     .default('true')
     .transform((value) => value === 'true'),
 
+  // API oficial do WhatsApp (Cloud API da Meta). Um app da Meta atende todas
+  // as empresas: o token de verificação e o segredo do app ficam aqui; o id do
+  // número e o token de acesso de cada empresa são cadastrados na tela WhatsApp.
+  WHATSAPP_CLOUD_VERIFY_TOKEN: z.string().optional(),
+  WHATSAPP_CLOUD_APP_SECRET: z.string().optional(),
+  WHATSAPP_GRAPH_VERSION: z.string().default('v23.0'),
+
   // Envio de e-mail (recuperação de senha). Sem SMTP_HOST, o link só aparece
   // no terminal do servidor. SMTP_SECURE=true para a porta 465 (SSL).
   SMTP_HOST: z.string().optional(),

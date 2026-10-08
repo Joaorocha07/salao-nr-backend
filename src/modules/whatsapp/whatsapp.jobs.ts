@@ -1,8 +1,8 @@
 import { CompanySettings, Lead, LeadStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { toIsoDate } from './whatsapp.availability';
-import { FollowUpKind, endIdleHumanSession, humanSessionEndsAt, sendDayBeforeReminder, sendFollowUp, sendHourReminder, withContactLock } from './whatsapp.bot';
-import { findWhatsAppJid, isConnected, sendText } from './whatsapp.connection';
+import { FollowUpKind, SendFn, endIdleHumanSession, humanSessionEndsAt, sendDayBeforeReminder, sendFollowUp, sendHourReminder, withContactLock } from './whatsapp.bot';
+import { NoTemplateError, findWhatsAppJid, isConnected, sendMessage } from './whatsapp.gateway';
 
 // Tarefas periódicas do bot:
 // - Lembretes do agendamento:
@@ -33,6 +33,23 @@ const pad = (n: number) => String(n).padStart(2, '0');
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type ReminderKind = 'day' | 'hour';
+
+// API oficial sem modelo aprovado e cliente fora da janela de 24h: a mensagem
+// não sai. Guarda por um tempo para não tentar de novo a cada minuto.
+const SKIP_MS = 6 * 60 * 60 * 1000;
+const skipped = new Map<string, number>();
+const isSkipped = (key: string) => {
+  const at = skipped.get(key);
+  return at !== undefined && Date.now() - at < SKIP_MS;
+};
+function handleSendError(key: string, err: unknown, label: string) {
+  if (err instanceof NoTemplateError) {
+    skipped.set(key, Date.now());
+    console.warn(err.message);
+    return;
+  }
+  console.error(label, err);
+}
 
 // Qual lembrete (se algum) está na hora de ir para este agendamento.
 export function dueReminder(lead: Lead, settings: CompanySettings, now = new Date()): ReminderKind | null {
@@ -83,20 +100,22 @@ export async function sendDueReminders(now = new Date()): Promise<number> {
       });
 
       for (const candidate of leads) {
-        if (!dueReminder(candidate, settings, now)) continue;
+        const reminderKind = dueReminder(candidate, settings, now);
+        const skipKey = `${candidate.id}:${reminderKind}`;
+        if (!reminderKind || isSkipped(skipKey)) continue;
         try {
           await withContactLock(settings.companyId, candidate.whatsappId!, async () => {
             // Pode ter sido reagendado, cancelado ou avisado enquanto esperava na fila.
             const lead = await prisma.lead.findUnique({ where: { id: candidate.id } });
             const kind = lead && dueReminder(lead, settings, new Date());
             if (!lead || !kind) return;
-            const send = (text: string) => sendText(settings.companyId, lead.whatsappId!, text);
+            const send: SendFn = (text, automatic) => sendMessage(settings.companyId, lead.whatsappId!, text, automatic);
             if (kind === 'hour') await sendHourReminder(settings.companyId, settings, lead, send);
             else await sendDayBeforeReminder(settings.companyId, settings, lead, send);
             sent += 1;
           });
         } catch (err) {
-          console.error('Falha ao enviar lembrete do WhatsApp:', err);
+          handleSendError(skipKey, err, 'Falha ao enviar lembrete do WhatsApp:');
         }
         await sleep(DELAY_BETWEEN_MS);
       }
@@ -123,7 +142,7 @@ export async function closeIdleHandoffs(): Promise<number> {
       if (!settings || !isConnected(session.companyId)) continue;
       if (humanSessionEndsAt(session, settings).endsAt.getTime() > Date.now()) continue;
       try {
-        if (await endIdleHumanSession(session.companyId, session.phone, (text) => sendText(session.companyId, session.phone, text))) ended += 1;
+        if (await endIdleHumanSession(session.companyId, session.phone, (text) => sendMessage(session.companyId, session.phone, text))) ended += 1;
       } catch (err) {
         console.error('Falha ao encerrar atendimento do WhatsApp:', err);
       }
@@ -270,6 +289,7 @@ export async function sendDueFollowUps(now = new Date()): Promise<number> {
 
       // Só um por vez: o próximo sai na verificação de daqui a 5 minutos.
       for (const candidate of candidates) {
+        if (isSkipped(`${candidate.id}:retorno`)) continue;
         try {
           const contactId = await contactFor(settings.companyId, candidate);
           if (!contactId) continue;
@@ -279,13 +299,13 @@ export async function sendDueFollowUps(now = new Date()): Promise<number> {
             const lead = await prisma.lead.findUnique({ where: { id: candidate.id }, include: { history: { select: { date: true } } } });
             const kind = lead && dueFollowUp(lead, settings, new Date());
             if (!lead || !kind) return;
-            delivered = await sendFollowUp(settings.companyId, settings, lead, contactId, kind, (text) => sendText(settings.companyId, contactId, text));
+            delivered = await sendFollowUp(settings.companyId, settings, lead, contactId, kind, (text, automatic) => sendMessage(settings.companyId, contactId, text, automatic));
           });
           if (!delivered) continue;
           sent += 1;
           break;
         } catch (err) {
-          console.error('Falha ao enviar retorno do WhatsApp:', err);
+          handleSendError(`${candidate.id}:retorno`, err, 'Falha ao enviar retorno do WhatsApp:');
         }
       }
     }

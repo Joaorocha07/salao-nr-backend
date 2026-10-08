@@ -13,7 +13,7 @@ import { leadsRouter } from './modules/leads/leads.routes';
 import { companiesRouter } from './modules/companies/companies.routes';
 import { settingsRouter } from './modules/settings/settings.routes';
 import { usersRouter } from './modules/users/users.routes';
-import { whatsappRouter } from './modules/whatsapp/whatsapp.routes';
+import { whatsappRouter, whatsappWebhookRouter } from './modules/whatsapp/whatsapp.routes';
 
 export const app = express();
 
@@ -29,9 +29,12 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json({ limit: '2mb' }));
+// rawBody: o webhook da Meta é conferido pela assinatura do corpo exato recebido.
+app.use(express.json({ limit: '2mb', verify: (req, _res, buf) => { (req as express.Request).rawBody = buf; } }));
 app.use(cookieParser());
 app.use(morgan(env.NODE_ENV === 'development' ? 'dev' : 'combined'));
+// Antes do limite de requisições: a Meta manda muitas notificações do mesmo IP.
+app.use('/api/whatsapp/webhook', whatsappWebhookRouter);
 app.use(apiRateLimiter);
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));

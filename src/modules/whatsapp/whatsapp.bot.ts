@@ -50,12 +50,23 @@ type SessionData = {
   staffAt?: string;
   requestedAt?: string;
 };
+// Mensagens que o bot manda sem o cliente ter escrito (lembretes e retornos).
+// Pela API oficial, fora da janela de 24h desde a última mensagem do cliente
+// elas só podem sair como modelo aprovado pela Meta (whatsapp.templates.ts):
+// por isso vão com o tipo, as variáveis e a última mensagem do cliente.
+export type AutomaticKind =
+  | 'lembrete_vespera' | 'lembrete_hora'
+  | 'retorno_sem_agendamento' | 'retorno_sem_agendamento_repetido' | 'retorno_nao_fechou' | 'retorno_inativo';
+export type MessageVars = { nome?: string; servico?: string; data?: string; hora?: string };
+export type AutomaticMessage = { kind: AutomaticKind; vars: MessageVars; lastClientMessageAt: Date | null };
+export type SendFn = (text: string, automatic?: AutomaticMessage) => Promise<void>;
+
 type BotContext = {
   companyId: string;
   // Número do contato só com dígitos (ex.: 5531999999999). Se o WhatsApp não
   // revelar o número, é o JID anônimo do contato (termina em @lid).
   waId: string;
-  send: (text: string) => Promise<void>;
+  send: SendFn;
   saveContact?: (name: string) => Promise<void>;
   settings: CompanySettings;
   leadId: string | null;
@@ -67,7 +78,7 @@ export type IncomingWhatsAppMessage = {
   text: string | null;
   mediaType?: string;
   profileName?: string;
-  send: (text: string) => Promise<void>;
+  send: SendFn;
   // Salva o cliente nos contatos do WhatsApp do salão.
   saveContact?: (name: string) => Promise<void>;
 };
@@ -372,8 +383,8 @@ async function logMessage(ctx: BotContext, text: string, own: boolean) {
   await prisma.leadMessage.create({ data: { leadId: ctx.leadId, text, own } });
 }
 
-async function say(ctx: BotContext, text: string) {
-  await ctx.send(text);
+async function say(ctx: BotContext, text: string, automatic?: AutomaticMessage) {
+  await ctx.send(text, automatic);
   await logMessage(ctx, text, true);
 }
 
@@ -531,22 +542,41 @@ function reminderNote(settings: CompanySettings, date: string, time: string): st
   return '';
 }
 
+// Texto completo de cada mensagem automática, como o cliente recebe. Também é
+// o corpo do modelo enviado para aprovação da Meta (whatsapp.templates.ts),
+// com as variáveis trocadas por {{1}}, {{2}}...
+export function automaticMessageText(settings: CompanySettings, kind: AutomaticKind, vars: MessageVars): string {
+  if (kind === 'lembrete_vespera') return `${fillTemplate(settings.botReminderMessage, vars)}\n\n${confirmOptions(settings)}`;
+  if (kind === 'lembrete_hora') return fillTemplate(settings.botHourReminderMessage, vars);
+  const template = kind === 'retorno_sem_agendamento' ? settings.botFollowUpLeadFirstMessage
+    : kind === 'retorno_sem_agendamento_repetido' ? settings.botFollowUpLeadRepeatMessage
+    : kind === 'retorno_nao_fechou' ? settings.botFollowUpNotClosedMessage
+    : settings.botFollowUpInactiveMessage;
+  const text = fillTemplate(template, vars);
+  // Modo captura: sem opções, a resposta do cliente fica para a equipe.
+  if (captureMode(settings)) return text;
+  return blocks(text, 'Responda com o número:', numbered(followUpOptions(settings).map((o) => FOLLOW_UP_LABELS[o])));
+}
+
 // Lembretes (chamados por whatsapp.jobs.ts, dentro do lock do contato).
 // Véspera: sempre pede confirmação.
-export async function sendDayBeforeReminder(companyId: string, settings: CompanySettings, lead: Lead, send: (text: string) => Promise<void>) {
+export async function sendDayBeforeReminder(companyId: string, settings: CompanySettings, lead: Lead, send: SendFn) {
   const ctx: BotContext = { companyId, waId: lead.whatsappId!, send, settings, leadId: lead.id };
-  await say(ctx, `${fillTemplate(settings.botReminderMessage, appointmentVars(lead))}\n\n${confirmOptions(settings)}`);
+  const vars = appointmentVars(lead);
+  await say(ctx, automaticMessageText(settings, 'lembrete_vespera', vars), { kind: 'lembrete_vespera', vars, lastClientMessageAt: lead.lastClientMessageAt });
   await prisma.lead.update({ where: { id: lead.id }, data: { appointmentReminderSentAt: new Date() } });
   await setSession(ctx, 'CONFIRM', {});
 }
 
 // Pouco antes do horário: só avisa; se o cliente ainda não confirmou (ou
 // marcou no mesmo dia e não teve o da véspera), também pede confirmação.
-export async function sendHourReminder(companyId: string, settings: CompanySettings, lead: Lead, send: (text: string) => Promise<void>) {
+// (Como modelo da Meta vai sem as opções; "ok"/"sim" continuam confirmando.)
+export async function sendHourReminder(companyId: string, settings: CompanySettings, lead: Lead, send: SendFn) {
   const ctx: BotContext = { companyId, waId: lead.whatsappId!, send, settings, leadId: lead.id };
-  const text = fillTemplate(settings.botHourReminderMessage, appointmentVars(lead));
+  const vars = appointmentVars(lead);
+  const text = automaticMessageText(settings, 'lembrete_hora', vars);
   const askConfirmation = !lead.appointmentConfirmedAt;
-  await say(ctx, askConfirmation ? `${text}\n\n${confirmOptions(settings)}` : text);
+  await say(ctx, askConfirmation ? `${text}\n\n${confirmOptions(settings)}` : text, { kind: 'lembrete_hora', vars, lastClientMessageAt: lead.lastClientMessageAt });
   await prisma.lead.update({ where: { id: lead.id }, data: { appointmentHourReminderSentAt: new Date() } });
   if (askConfirmation) await setSession(ctx, 'CONFIRM', {});
 }
@@ -555,36 +585,34 @@ export async function sendHourReminder(companyId: string, settings: CompanySetti
 // do primeiro contato, depois a cada 30 dias).
 export type FollowUpKind = 'nao_fechou' | 'inativo' | 'sem_agendamento';
 
-function followUpTemplate(settings: CompanySettings, lead: Lead, kind: FollowUpKind): string {
-  if (kind === 'sem_agendamento') return lead.followUpCount === 0 ? settings.botFollowUpLeadFirstMessage : settings.botFollowUpLeadRepeatMessage;
-  return kind === 'nao_fechou' ? settings.botFollowUpNotClosedMessage : settings.botFollowUpInactiveMessage;
+function followUpMessageKind(lead: Lead, kind: FollowUpKind): AutomaticKind {
+  if (kind === 'sem_agendamento') return lead.followUpCount === 0 ? 'retorno_sem_agendamento' : 'retorno_sem_agendamento_repetido';
+  return kind === 'nao_fechou' ? 'retorno_nao_fechou' : 'retorno_inativo';
 }
 
 // Retorno automático (chamado por whatsapp.jobs.ts, dentro do lock do contato):
 // pergunta se o cliente quer agendar e abre a etapa FOLLOW_UP. Não interrompe
 // uma conversa em andamento; devolve false quando não enviou.
-export async function sendFollowUp(companyId: string, settings: CompanySettings, lead: Lead, contactId: string, kind: FollowUpKind, send: (text: string) => Promise<void>): Promise<boolean> {
+export async function sendFollowUp(companyId: string, settings: CompanySettings, lead: Lead, contactId: string, kind: FollowUpKind, send: SendFn): Promise<boolean> {
   const session = await prisma.whatsAppSession.findUnique({ where: { companyId_phone: { companyId, phone: contactId } } });
   if (session && !sessionExpired(session, settings)) return false;
 
   const ctx: BotContext = { companyId, waId: contactId, send, settings, leadId: lead.id };
-  const template = followUpTemplate(settings, lead, kind);
+  const messageKind = followUpMessageKind(lead, kind);
   const lastService = await prisma.serviceRecord.findFirst({ where: { leadId: lead.id }, orderBy: { date: 'desc' } });
-  const text = fillTemplate(template, {
+  const vars = {
     nome: isPlaceholderName(lead.name) ? '' : firstName(lead.name),
     servico: lead.interests.join(' + ') || lastService?.service || '',
+  };
+  await say(ctx, automaticMessageText(settings, messageKind, vars), { kind: messageKind, vars, lastClientMessageAt: lead.lastClientMessageAt });
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: { followUpSentAt: new Date(), followUpKind: kind, whatsappId: contactId, ...(kind === 'sem_agendamento' ? { followUpCount: { increment: 1 } } : {}) },
   });
-  const sent = { followUpSentAt: new Date(), followUpKind: kind, whatsappId: contactId, ...(kind === 'sem_agendamento' ? { followUpCount: { increment: 1 } } : {}) };
-  if (captureMode(settings)) {
-    // Sem menu: a mensagem vai como está e a resposta do cliente fica para a equipe.
-    await say(ctx, text);
-    await prisma.lead.update({ where: { id: lead.id }, data: sent });
-    return true;
+  // Modo captura: sem opções, a resposta do cliente fica para a equipe.
+  if (!captureMode(settings)) {
+    await setSession(ctx, 'FOLLOW_UP', { followUp: followUpOptions(settings), askName: settings.captureName && isPlaceholderName(lead.name) });
   }
-  const options = followUpOptions(settings);
-  await say(ctx, blocks(text, 'Responda com o número:', numbered(options.map((o) => FOLLOW_UP_LABELS[o]))));
-  await prisma.lead.update({ where: { id: lead.id }, data: sent });
-  await setSession(ctx, 'FOLLOW_UP', { followUp: options, askName: settings.captureName && isPlaceholderName(lead.name) });
   return true;
 }
 

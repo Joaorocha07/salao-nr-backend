@@ -1,6 +1,20 @@
 import { Request, Response } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import * as whatsappService from './whatsapp.service';
+import * as templates from './whatsapp.templates';
+import type { AutomaticKind } from './whatsapp.bot';
+
+export const connectCloud = asyncHandler(async (req: Request, res: Response) => {
+  return res.json(await whatsappService.connectCloud(req.auth!.companyId, req.body));
+});
+
+export const listTemplates = asyncHandler(async (req: Request, res: Response) => {
+  return res.json(await templates.listTemplates(req.auth!.companyId));
+});
+
+export const submitTemplate = asyncHandler(async (req: Request, res: Response) => {
+  return res.json(await templates.submitTemplate(req.auth!.companyId, req.params.kind as AutomaticKind));
+});
 
 export const getStatus = asyncHandler(async (req: Request, res: Response) => {
   const status = await whatsappService.getStatus(req.auth!.companyId);
