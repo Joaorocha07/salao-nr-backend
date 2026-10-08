@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../../middlewares/auth.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import * as controller from './leads.controller';
+import * as situationController from './leads.situation';
 import { addMessageSchema, addNoteSchema, agendaEventsQuerySchema, createLeadSchema, listLeadsQuerySchema, scheduleAppointmentSchema, updateLeadSchema } from './leads.schema';
 
 export const leadsRouter = Router();
@@ -10,6 +11,7 @@ leadsRouter.use(authenticate);
 
 leadsRouter.get('/', validate(listLeadsQuerySchema, 'query'), controller.list);
 leadsRouter.get('/history', controller.history);
+leadsRouter.get('/situation', situationController.situation);
 leadsRouter.get('/agenda-events', validate(agendaEventsQuerySchema, 'query'), controller.agendaEvents);
 leadsRouter.get('/:id', controller.get);
 leadsRouter.post('/', validate(createLeadSchema), controller.create);

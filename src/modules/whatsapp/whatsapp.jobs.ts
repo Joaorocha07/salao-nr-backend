@@ -20,6 +20,10 @@ import { findWhatsAppJid, isConnected, sendText } from './whatsapp.connection';
 //     dias sem falar com o salão.
 //   Uma mensagem por vez: só volta a enviar se o cliente conversar de novo
 //   (ou for marcado outra vez como "Não fechou") e o prazo passar de novo.
+//   * chegou pelo WhatsApp (firstContactAt) e ainda não agendou: a primeira
+//     botFollowUpLeadFirstDays dias depois do primeiro contato, depois uma a
+//     cada botFollowUpLeadRepeatDays, até agendar. Esse tem prioridade sobre
+//     o "Não fechou" para esses clientes.
 
 const CHECK_INTERVAL_MS = 60 * 1000;
 // Espaço entre um lembrete e outro, para não disparar tudo de uma vez.
@@ -137,7 +141,7 @@ const FOLLOW_UP_INTERVAL_MS = 5 * 60 * 1000;
 // Cliente sem WhatsApp no número cadastrado: não tenta de novo por um dia.
 const noWhatsApp = new Map<string, number>();
 
-type FollowUpLead = Lead & { history: { date: string }[] };
+export type FollowUpLead = Lead & { history: { date: string }[] };
 
 // "2026-09-01" -> meio-dia desse dia (datas do CRM não têm horário).
 const fromIsoDate = (date: string | null | undefined) => (date ? new Date(`${date}T12:00:00`) : null);
@@ -155,9 +159,27 @@ function hasUpcomingAppointment(lead: Lead, now: Date): boolean {
   return new Date(`${lead.appointmentDate}T${lead.appointmentTime ?? '23:59'}:00`).getTime() > now.getTime();
 }
 
-// Qual retorno (se algum) está na hora de ir para este cliente.
-export function dueFollowUp(lead: FollowUpLead, settings: CompanySettings, now = new Date()): FollowUpKind | null {
+// Chegou pelo WhatsApp depois do retorno "sem agendamento" existir, nunca
+// foi atendido e não está agendado.
+function awaitingBooking(lead: FollowUpLead): boolean {
+  return Boolean(lead.firstContactAt) && lead.history.length === 0
+    && (lead.status === LeadStatus.NOVO_LEAD || lead.status === LeadStatus.NAO_FECHOU);
+}
+
+type FollowUpPlan = { kind: FollowUpKind; since: Date; days: number };
+
+// Qual retorno vale para este cliente e de quando conta o prazo. null = nenhum
+// (ou já enviado, esperando o cliente).
+export function followUpPlan(lead: FollowUpLead, settings: CompanySettings, now = new Date()): FollowUpPlan | null {
   if (hasUpcomingAppointment(lead, now)) return null;
+  if (settings.botFollowUpLeadEnabled && awaitingBooking(lead)) {
+    // Primeiro retorno conta do primeiro contato; os seguintes, do último
+    // retorno. Mensagem do cliente recomeça o prazo.
+    const first = lead.followUpCount === 0;
+    const since = latest(first ? lead.firstContactAt : lead.followUpSentAt ?? lead.firstContactAt, lead.lastClientMessageAt);
+    if (!since) return null;
+    return { kind: 'sem_agendamento', since, days: first ? settings.botFollowUpLeadFirstDays : settings.botFollowUpLeadRepeatDays };
+  }
   let kind: FollowUpKind;
   let days: number;
   if (lead.status === LeadStatus.NAO_FECHOU) {
@@ -176,7 +198,19 @@ export function dueFollowUp(lead: FollowUpLead, settings: CompanySettings, now =
   if (!since) return null;
   // Já mandou o retorno depois do último contato: espera o cliente responder.
   if (lead.followUpSentAt && lead.followUpSentAt >= since) return null;
-  return now.getTime() - since.getTime() >= days * DAY_MS ? kind : null;
+  return { kind, since, days };
+}
+
+// Quando sai o próximo retorno (sem contar dias e horários de atendimento).
+export function nextFollowUpAt(lead: FollowUpLead, settings: CompanySettings, now = new Date()): Date | null {
+  const plan = followUpPlan(lead, settings, now);
+  return plan ? new Date(plan.since.getTime() + plan.days * DAY_MS) : null;
+}
+
+// Qual retorno (se algum) está na hora de ir para este cliente.
+export function dueFollowUp(lead: FollowUpLead, settings: CompanySettings, now = new Date()): FollowUpKind | null {
+  const plan = followUpPlan(lead, settings, now);
+  return plan && now.getTime() - plan.since.getTime() >= plan.days * DAY_MS ? plan.kind : null;
 }
 
 // Retorno só nos dias e horários de atendimento do salão.
@@ -209,7 +243,7 @@ export async function sendDueFollowUps(now = new Date()): Promise<number> {
   let sent = 0;
   try {
     const companies = await prisma.companySettings.findMany({
-      where: { whatsappConnected: true, botEnabled: true, OR: [{ botFollowUpNotClosedEnabled: true }, { botFollowUpInactiveEnabled: true }] },
+      where: { whatsappConnected: true, botEnabled: true, OR: [{ botFollowUpNotClosedEnabled: true }, { botFollowUpInactiveEnabled: true }, { botFollowUpLeadEnabled: true }] },
     });
 
     for (const settings of companies) {
@@ -221,17 +255,18 @@ export async function sendDueFollowUps(now = new Date()): Promise<number> {
       const { _max: last } = await prisma.lead.aggregate({ where: { companyId: settings.companyId }, _max: { followUpSentAt: true } });
       if (last.followUpSentAt && now.getTime() - last.followUpSentAt.getTime() < FOLLOW_UP_INTERVAL_MS) continue;
 
-      const statuses: LeadStatus[] = [
+      const statuses = [...new Set<LeadStatus>([
         ...(settings.botFollowUpNotClosedEnabled ? [LeadStatus.NAO_FECHOU] : []),
         ...(settings.botFollowUpInactiveEnabled ? [LeadStatus.FECHADO, LeadStatus.ANTIGO, LeadStatus.NOVO_LEAD, LeadStatus.AGENDADO] : []),
-      ];
+        ...(settings.botFollowUpLeadEnabled ? [LeadStatus.NOVO_LEAD, LeadStatus.NAO_FECHOU] : []),
+      ])];
       const candidates = (await prisma.lead.findMany({
         where: { companyId: settings.companyId, status: { in: statuses } },
         include: { history: { select: { date: true } } },
       }))
         .filter((lead) => dueFollowUp(lead, settings, now))
-        // Quem está há mais tempo sem contato primeiro.
-        .sort((a, b) => (followUpSince(a)?.getTime() ?? 0) - (followUpSince(b)?.getTime() ?? 0));
+        // Quem está há mais tempo esperando primeiro.
+        .sort((a, b) => (followUpPlan(a, settings, now)?.since.getTime() ?? 0) - (followUpPlan(b, settings, now)?.since.getTime() ?? 0));
 
       // Só um por vez: o próximo sai na verificação de daqui a 5 minutos.
       for (const candidate of candidates) {

@@ -21,10 +21,18 @@ import { freeTimes, isTimeFree, nextFreeDays, serviceDuration, toIsoDate, weekda
 // Com botAudience = "selecionados" o bot só responde quem está numa dessas
 // conversas que ele mesmo começou (retorno ou lembrete); as demais mensagens
 // chegam no CRM e ficam para a equipe.
+// Com botMode = "captura" não há menu: o bot cadastra o cliente (nome salvo
+// no celular, nome do CRM ou do perfil; sem nenhum, pergunta em ASK_NAME),
+// manda botCaptureWelcomeMessage e passa a conversa para a equipe (HUMAN).
+// Lembretes e confirmação continuam iguais; remarcar fica com a equipe.
 
 type BotStep = 'MENU' | 'ASK_NAME' | 'ASK_SERVICE' | 'ASK_DATE' | 'ASK_TIME' | 'CONFIRM' | 'MANAGE' | 'FOLLOW_UP' | 'HUMAN';
 type SessionData = {
   askName?: boolean;
+  // ASK_NAME do modo captura: depois do nome vêm as boas-vindas.
+  // nameRetry = já pediu o nome de novo uma vez.
+  capture?: boolean;
+  nameRetry?: boolean;
   // MANAGE: ações oferecidas na última mensagem, na ordem numerada.
   manage?: string[];
   // FOLLOW_UP: opções oferecidas na mensagem de retorno, na ordem numerada.
@@ -70,6 +78,11 @@ const FLOW_TIMEOUT_MS = 30 * 60 * 1000;
 const CONFIRM_TIMEOUT_MS = 48 * 60 * 60 * 1000;
 // Cliente pediu a equipe e ninguém respondeu: depois disso o bot volta (sem avisar).
 const HANDOFF_MAX_WAIT_MS = 12 * 60 * 60 * 1000;
+// Modo captura: só manda as boas-vindas de novo se o cliente passou esse tempo
+// sem escrever (senão cada "oi" no meio da conversa com a equipe receberia).
+const CAPTURE_WELCOME_GAP_MS = 24 * 60 * 60 * 1000;
+// Resposta do cliente a um retorno enviado há menos que isso vai para a equipe.
+const FOLLOW_UP_REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 // Recomeçam a conversa do zero ("0", "voltar" e "menu" só voltam ao menu: BACK_WORDS).
 const RESET_WORDS = new Set(['sair', 'cancelar']);
 const WEEKDAYS = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
@@ -154,7 +167,12 @@ export function followUpOptions(settings: Pick<CompanySettings, 'botSchedulingEn
 // Bot no modo "só clientes selecionados": não puxa conversa com quem escreve.
 export const onlySelected = (settings: Pick<CompanySettings, 'botAudience'>) => settings.botAudience === 'selecionados';
 
+// Bot só cadastra e passa para a equipe (sem menu).
+export const captureMode = (settings: Pick<CompanySettings, 'botMode'>) => settings.botMode === 'captura';
+
 export const CONFIRM_OPTIONS =`Responda com o número:\n\n1) Confirmar\n2) Remarcar\n3) Cancelar\n\n${BACK_OPTION}`;
+// No modo captura não há menu para voltar.
+const confirmOptions = (settings: Pick<CompanySettings, 'botMode'>) => (captureMode(settings) ? 'Responda com o número:\n\n1) Confirmar\n2) Remarcar\n3) Cancelar' : CONFIRM_OPTIONS);
 const CONFIRM_WORDS = new Set(['1', 'sim', 's', 'confirmo', 'confirmar', 'confirmado', 'confirmada', 'ok', 'certo', 'tudo certo', 'pode ser', 'combinado', '👍']);
 const PLACEHOLDER_PREFIX = 'Cliente WhatsApp';
 
@@ -180,7 +198,23 @@ function normalize(text: string): string {
 }
 
 export function fillTemplate(template: string, vars: { nome?: string; servico?: string; data?: string; hora?: string }): string {
-  return template.replace(/\{(nome|servico|serviço|data|hora)\}/gi, (_, key: string) => vars[normalize(key) as keyof typeof vars] ?? '');
+  return template
+    .replace(/\{(nome|servico|serviço|data|hora)\}/gi, (_, key: string) => vars[normalize(key) as keyof typeof vars] ?? '')
+    // Marcador vazio (ex.: cliente sem nome): "Olá, !" -> "Olá!".
+    .replace(/,\s*([!?.])/g, '$1')
+    .replace(/ {2,}/g, ' ');
+}
+
+// Resposta que parece um nome (o cliente pode responder com uma dúvida).
+const GREETING_WORDS = /^(oi+|ola|opa|bom dia|boa tarde|boa noite|tudo bem|ok|sim|nao)$/;
+function looksLikeName(name: string): boolean {
+  return name.length >= 2 && name.length <= 60 && !/[\d?@]/.test(name) && name.split(' ').length <= 5 && !GREETING_WORDS.test(normalize(name));
+}
+
+// Nome com que o contato está salvo na agenda do celular (whatsapp.connection.ts).
+async function savedContactName(companyId: string, waId: string): Promise<string | undefined> {
+  const contact = await prisma.whatsAppContact.findUnique({ where: { companyId_contactId: { companyId, contactId: waId } } });
+  return contact?.name || undefined;
 }
 
 // "sexta, 26/09" — ou "hoje (sexta, 26/09)" / "amanhã (sábado, 27/09)".
@@ -369,7 +403,9 @@ async function sendWelcome(ctx: BotContext, name: string | undefined, data: Sess
 // Terminou um agendamento/confirmação/cancelamento: continua ouvindo o menu
 // por um tempo, para o cliente poder mandar "2" (ver) ou "remarcar" em seguida.
 async function finishConversation(ctx: BotContext) {
-  await setSession(ctx, 'MENU', { idle: true });
+  // Modo captura: sem menu, a próxima mensagem fica para a equipe.
+  if (captureMode(ctx.settings)) await clearSession(ctx);
+  else await setSession(ctx, 'MENU', { idle: true });
 }
 
 async function saveContact(ctx: BotContext, name: string) {
@@ -432,8 +468,9 @@ export async function endIdleHumanSession(companyId: string, contactId: string, 
 
     const lead = await findLeadByWhatsApp(companyId, contactId);
     const ctx: BotContext = { companyId, waId: contactId, send, settings, leadId: lead?.id ?? null };
-    if (waitingForStaff) {
-      // Ninguém da equipe respondeu: só libera o bot para a próxima mensagem.
+    if (waitingForStaff || captureMode(settings)) {
+      // Ninguém da equipe respondeu (ou modo captura, em que o bot não tem
+      // menu para oferecer depois): só libera o bot, sem mensagem.
       await clearSession(ctx);
       return;
     }
@@ -498,7 +535,7 @@ function reminderNote(settings: CompanySettings, date: string, time: string): st
 // Véspera: sempre pede confirmação.
 export async function sendDayBeforeReminder(companyId: string, settings: CompanySettings, lead: Lead, send: (text: string) => Promise<void>) {
   const ctx: BotContext = { companyId, waId: lead.whatsappId!, send, settings, leadId: lead.id };
-  await say(ctx, `${fillTemplate(settings.botReminderMessage, appointmentVars(lead))}\n\n${CONFIRM_OPTIONS}`);
+  await say(ctx, `${fillTemplate(settings.botReminderMessage, appointmentVars(lead))}\n\n${confirmOptions(settings)}`);
   await prisma.lead.update({ where: { id: lead.id }, data: { appointmentReminderSentAt: new Date() } });
   await setSession(ctx, 'CONFIRM', {});
 }
@@ -509,12 +546,19 @@ export async function sendHourReminder(companyId: string, settings: CompanySetti
   const ctx: BotContext = { companyId, waId: lead.whatsappId!, send, settings, leadId: lead.id };
   const text = fillTemplate(settings.botHourReminderMessage, appointmentVars(lead));
   const askConfirmation = !lead.appointmentConfirmedAt;
-  await say(ctx, askConfirmation ? `${text}\n\n${CONFIRM_OPTIONS}` : text);
+  await say(ctx, askConfirmation ? `${text}\n\n${confirmOptions(settings)}` : text);
   await prisma.lead.update({ where: { id: lead.id }, data: { appointmentHourReminderSentAt: new Date() } });
   if (askConfirmation) await setSession(ctx, 'CONFIRM', {});
 }
 
-export type FollowUpKind = 'nao_fechou' | 'inativo';
+// sem_agendamento: chegou pelo WhatsApp e ainda não agendou (7 dias depois
+// do primeiro contato, depois a cada 30 dias).
+export type FollowUpKind = 'nao_fechou' | 'inativo' | 'sem_agendamento';
+
+function followUpTemplate(settings: CompanySettings, lead: Lead, kind: FollowUpKind): string {
+  if (kind === 'sem_agendamento') return lead.followUpCount === 0 ? settings.botFollowUpLeadFirstMessage : settings.botFollowUpLeadRepeatMessage;
+  return kind === 'nao_fechou' ? settings.botFollowUpNotClosedMessage : settings.botFollowUpInactiveMessage;
+}
 
 // Retorno automático (chamado por whatsapp.jobs.ts, dentro do lock do contato):
 // pergunta se o cliente quer agendar e abre a etapa FOLLOW_UP. Não interrompe
@@ -524,15 +568,22 @@ export async function sendFollowUp(companyId: string, settings: CompanySettings,
   if (session && !sessionExpired(session, settings)) return false;
 
   const ctx: BotContext = { companyId, waId: contactId, send, settings, leadId: lead.id };
-  const template = kind === 'nao_fechou' ? settings.botFollowUpNotClosedMessage : settings.botFollowUpInactiveMessage;
+  const template = followUpTemplate(settings, lead, kind);
   const lastService = await prisma.serviceRecord.findFirst({ where: { leadId: lead.id }, orderBy: { date: 'desc' } });
   const text = fillTemplate(template, {
     nome: isPlaceholderName(lead.name) ? '' : firstName(lead.name),
     servico: lead.interests.join(' + ') || lastService?.service || '',
   });
+  const sent = { followUpSentAt: new Date(), followUpKind: kind, whatsappId: contactId, ...(kind === 'sem_agendamento' ? { followUpCount: { increment: 1 } } : {}) };
+  if (captureMode(settings)) {
+    // Sem menu: a mensagem vai como está e a resposta do cliente fica para a equipe.
+    await say(ctx, text);
+    await prisma.lead.update({ where: { id: lead.id }, data: sent });
+    return true;
+  }
   const options = followUpOptions(settings);
   await say(ctx, blocks(text, 'Responda com o número:', numbered(options.map((o) => FOLLOW_UP_LABELS[o]))));
-  await prisma.lead.update({ where: { id: lead.id }, data: { followUpSentAt: new Date(), followUpKind: kind, whatsappId: contactId } });
+  await prisma.lead.update({ where: { id: lead.id }, data: sent });
   await setSession(ctx, 'FOLLOW_UP', { followUp: options, askName: settings.captureName && isPlaceholderName(lead.name) });
   return true;
 }
@@ -552,23 +603,30 @@ function sessionExpired(session: HumanSession & { step: string }, settings: Comp
 async function processMessage(ctx: BotContext, message: IncomingWhatsAppMessage) {
   const { settings } = ctx;
   const { text } = message;
+  const capture = captureMode(settings);
   const profileName = settings.captureName ? cleanName(message.profileName) || undefined : undefined;
+  // Nome salvo na agenda do celular vale mais que o do perfil do WhatsApp.
+  const contactName = settings.captureName ? await savedContactName(ctx.companyId, ctx.waId) : undefined;
 
   let lead = await findLeadByWhatsApp(ctx.companyId, ctx.waId);
-  if (!lead && settings.autoCreateLead) {
+  // Última mensagem do cliente antes desta (as boas-vindas do modo captura dependem dela).
+  const previousMessageAt = lead?.lastClientMessageAt ?? null;
+  if (!lead && (settings.autoCreateLead || capture)) {
     lead = await leadsService.createLead(ctx.companyId, {
-      name: profileName ?? placeholderName(ctx.waId),
+      name: contactName ?? profileName ?? placeholderName(ctx.waId),
       phone: formatPhone(ctx.waId),
       interests: [],
       status: LeadStatus.NOVO_LEAD,
       whatsappId: ctx.waId,
     });
     ctx.leadId = lead.id;
-    if (profileName) await saveContact(ctx, profileName);
+    if (!contactName && profileName) await saveContact(ctx, profileName);
+  } else if (lead && contactName && isPlaceholderName(lead.name)) {
+    lead = await prisma.lead.update({ where: { id: lead.id }, data: { name: contactName } });
   }
   ctx.leadId = lead?.id ?? null;
   // Cliente falou com o salão: o prazo do retorno automático recomeça.
-  if (lead) await prisma.lead.update({ where: { id: lead.id }, data: { lastClientMessageAt: new Date() } });
+  if (lead) lead = await prisma.lead.update({ where: { id: lead.id }, data: { lastClientMessageAt: new Date() } });
   await logMessage(ctx, text ?? `[${MEDIA_LABELS[message.mediaType ?? ''] ?? 'mensagem'}]`, false);
 
   let session = await prisma.whatsAppSession.findUnique({ where: { companyId_phone: { companyId: ctx.companyId, phone: ctx.waId } } });
@@ -590,6 +648,10 @@ async function processMessage(ctx: BotContext, message: IncomingWhatsAppMessage)
     if (text && lead && awaitingConfirmation(lead) && await answerConfirmation(ctx, lead, normalize(text))) return;
     // Só clientes selecionados: quem escreve por conta própria fica para a equipe.
     if (onlySelected(settings)) return;
+    if (capture) {
+      await startCapture(ctx, lead, previousMessageAt);
+      return;
+    }
 
     const name = firstName(isPlaceholderName(lead?.name) ? profileName : lead?.name);
     if (!settings.botSchedulingEnabled) {
@@ -606,7 +668,7 @@ async function processMessage(ctx: BotContext, message: IncomingWhatsAppMessage)
 
   // "0", "voltar" ou "menu" em qualquer etapa: volta direto ao menu principal
   // (sem repetir as boas-vindas). Também tira o cliente da espera pela equipe.
-  if (text && BACK_WORDS.has(normalize(text))) {
+  if (text && !capture && BACK_WORDS.has(normalize(text))) {
     const data = (session.data as SessionData) ?? {};
     await setSession(ctx, 'MENU', { askName: data.askName });
     await say(ctx, mainMenu(settings));
@@ -710,6 +772,24 @@ async function advanceConversation(ctx: BotContext, step: BotStep, data: Session
     return;
   }
 
+  if (step === 'ASK_NAME' && data.capture) {
+    const name = cleanName(text);
+    if (!looksLikeName(name)) {
+      if (!data.nameRetry) {
+        await setSession(ctx, 'ASK_NAME', { ...data, nameRetry: true });
+        await say(ctx, 'Pode me dizer só o seu nome, por favor?');
+        return;
+      }
+      // Segunda resposta sem nome: segue sem ele (a equipe completa o cadastro).
+      await welcomeAndHandOff(ctx, '');
+      return;
+    }
+    if (ctx.leadId) await prisma.lead.update({ where: { id: ctx.leadId }, data: { name } });
+    await saveContact(ctx, name);
+    await welcomeAndHandOff(ctx, firstName(name));
+    return;
+  }
+
   if (step === 'ASK_NAME') {
     const name = cleanName(text);
     if (name.length < 2 || /^\d+$/.test(name)) {
@@ -769,11 +849,43 @@ async function advanceConversation(ctx: BotContext, step: BotStep, data: Session
   if (step === 'CONFIRM') {
     if (!lead || !awaitingConfirmation(lead)) {
       // Horário já passou ou foi alterado pela equipe.
+      if (captureMode(settings)) {
+        await clearSession(ctx);
+        return;
+      }
       await sendWelcome(ctx, isPlaceholderName(lead?.name) ? '' : firstName(lead?.name), {});
       return;
     }
-    if (!(await answerConfirmation(ctx, lead, answer))) await say(ctx, blocks('Não entendi.', CONFIRM_OPTIONS));
+    if (!(await answerConfirmation(ctx, lead, answer))) await say(ctx, blocks('Não entendi.', confirmOptions(settings)));
   }
+}
+
+// Modo captura, cliente sem conversa em andamento.
+async function startCapture(ctx: BotContext, lead: Lead | null, previousMessageAt: Date | null) {
+  const { settings } = ctx;
+  const now = Date.now();
+  // Respondeu a um retorno do bot: a equipe continua a conversa.
+  const sentAt = lead?.followUpSentAt?.getTime();
+  if (sentAt && now - sentAt < FOLLOW_UP_REPLY_WINDOW_MS && (!previousMessageAt || previousMessageAt.getTime() < sentAt)) {
+    await setSession(ctx, 'HUMAN', { requestedAt: new Date().toISOString() });
+    await say(ctx, settings.botHandoffMessage);
+    return;
+  }
+  // Já conversou há pouco: as boas-vindas já foram, a equipe responde.
+  if (previousMessageAt && now - previousMessageAt.getTime() < CAPTURE_WELCOME_GAP_MS) return;
+
+  if (settings.captureName && isPlaceholderName(lead?.name)) {
+    await setSession(ctx, 'ASK_NAME', { capture: true });
+    await say(ctx, settings.botAskNameMessage);
+    return;
+  }
+  await welcomeAndHandOff(ctx, isPlaceholderName(lead?.name) ? '' : firstName(lead?.name));
+}
+
+// Boas-vindas do modo captura; a conversa fica esperando a equipe.
+async function welcomeAndHandOff(ctx: BotContext, name: string) {
+  await setSession(ctx, 'HUMAN', { requestedAt: new Date().toISOString() });
+  await say(ctx, fillTemplate(ctx.settings.botCaptureWelcomeMessage, { nome: name }));
 }
 
 // Cliente tem um horário marcado que ainda não passou.
@@ -903,6 +1015,11 @@ async function answerConfirmation(ctx: BotContext, lead: Lead, answer: string): 
     await leadsService.confirmAppointment(ctx.companyId, lead.id, 'bot');
     await finishConversation(ctx);
     await say(ctx, `Obrigado, ${firstName(lead.name)}! Está confirmado: ${when}. Até lá!`);
+    return true;
+  }
+  if ((answer === '2' || answer.includes('remarc')) && captureMode(ctx.settings)) {
+    await setSession(ctx, 'HUMAN', { requestedAt: new Date().toISOString() });
+    await say(ctx, ctx.settings.botHandoffMessage);
     return true;
   }
   if (answer === '2' || answer.includes('remarc')) {

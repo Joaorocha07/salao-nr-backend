@@ -6,6 +6,7 @@ export const SCREENS = [
   'agenda',
   'historico',
   'clientes',
+  'situacao',
   'empresas',
   'whatsapp',
   'configuracoes',

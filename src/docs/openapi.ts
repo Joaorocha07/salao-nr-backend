@@ -420,6 +420,13 @@ export const openapiSpec = {
         responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { records: { type: 'array', items: { $ref: '#/components/schemas/ServiceRecord' } } } } } } } },
       },
     },
+    '/leads/situation': {
+      get: {
+        tags: ['Leads'],
+        summary: 'Situação de cada cliente: agendamentos, atendimentos, frequência, dias sem contato e próximo retorno do bot',
+        responses: { '200': { content: { 'application/json': { schema: { type: 'object', properties: { criteria: { type: 'object' }, clients: { type: 'array', items: { type: 'object' } } } } } } } },
+      },
+    },
     '/leads/{id}': {
       get: {
         tags: ['Leads'],

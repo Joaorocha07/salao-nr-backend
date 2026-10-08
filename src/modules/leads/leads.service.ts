@@ -64,6 +64,9 @@ export async function createLead(
       activityDate: date,
       notClosedAt: input.status === LeadStatus.NAO_FECHOU ? new Date() : undefined,
       lastClientMessageAt: input.whatsappId ? new Date() : undefined,
+      // Chegou pelo WhatsApp: entra no retorno "sem agendamento" (clientes que
+      // já existiam antes dele não têm esse campo e ficam de fora).
+      firstContactAt: input.whatsappId ? new Date() : undefined,
       ...(input.status === LeadStatus.FECHADO
         ? { history: { create: { companyId, service: input.interests.join(' + '), date } } }
         : {}),

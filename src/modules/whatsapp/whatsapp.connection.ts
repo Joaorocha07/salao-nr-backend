@@ -1,5 +1,6 @@
 import {
   Browsers,
+  Contact,
   DisconnectReason,
   WAMessage,
   WAMessageKey,
@@ -24,7 +25,7 @@ import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
 import { HttpError } from '../../lib/httpError';
 import { clearStoredSession, listCompaniesWithSession, useDatabaseAuthState } from '../../lib/whatsappAuthState';
-import { handleIncomingMessage, handleMessageFromPhone } from './whatsapp.bot';
+import { cleanName, handleIncomingMessage, handleMessageFromPhone } from './whatsapp.bot';
 
 // Conexão de cada empresa com o WhatsApp Web (Baileys). O administrador lê o
 // QR Code na tela do CRM e o servidor passa a funcionar como um "aparelho
@@ -165,6 +166,38 @@ export async function saveContact(companyId: string, contactId: string, chatJid:
     ...(pnJid ? { pnJid } : {}),
     ...(isLidUser(chatJid) ? { lidJid: chatJid } : {}),
   });
+  await rememberContactNames(companyId, [{ id: pnJid ?? chatJid, ...(isLidUser(chatJid) ? { lid: chatJid } : {}), name }]);
+}
+
+// Ids de um contato no formato de Lead.whatsappId: os dígitos do número e,
+// se houver, o JID anônimo (@lid) — o cliente pode chegar por qualquer um.
+function contactIds(contact: Partial<Contact>): string[] {
+  const ids = new Set<string>();
+  for (const jid of [contact.id, contact.phoneNumber, contact.lid]) {
+    if (!jid) continue;
+    if (isLidUser(jid)) ids.add(jidNormalizedUser(jid));
+    else if (jid.endsWith('@s.whatsapp.net')) {
+      const user = jidDecode(jid)?.user;
+      if (user) ids.add(user);
+    }
+  }
+  return [...ids];
+}
+
+// Guarda o nome com que cada contato está salvo na agenda do celular (o
+// WhatsApp manda isso na sincronização, não junto com as mensagens).
+async function rememberContactNames(companyId: string, contacts: Partial<Contact>[]): Promise<void> {
+  for (const contact of contacts) {
+    const name = cleanName(contact.name);
+    if (name.length < 2) continue;
+    for (const contactId of contactIds(contact)) {
+      await prisma.whatsAppContact.upsert({
+        where: { companyId_contactId: { companyId, contactId } },
+        update: { name },
+        create: { companyId, contactId, name },
+      });
+    }
+  }
 }
 
 // Confere se o número tem WhatsApp e devolve o JID correto (resolve, por
@@ -267,6 +300,12 @@ async function openSocket(companyId: string, conn: Connection): Promise<void> {
       }
     })().catch((err) => logger.error({ err, companyId }, 'Erro na conexão do WhatsApp'));
   });
+
+  const saveContactNames = (contacts: Partial<Contact>[]) => {
+    rememberContactNames(companyId, contacts).catch((err) => logger.error({ err, companyId }, 'Falha ao salvar os nomes dos contatos'));
+  };
+  sock.ev.on('contacts.upsert', saveContactNames);
+  sock.ev.on('contacts.update', saveContactNames);
 
   sock.ev.on('messages.upsert', ({ messages, type }) => {
     for (const message of messages) {

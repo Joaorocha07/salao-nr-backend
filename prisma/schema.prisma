@@ -43,6 +43,7 @@ model Company {
   refreshTokens    RefreshToken[]
   whatsappSessions WhatsAppSession[]
   whatsappAuth     WhatsAppAuth[]
+  whatsappContacts WhatsAppContact[]
 
   @@map("companies")
 }
@@ -157,6 +158,12 @@ model Lead {
   lastClientMessageAt DateTime?
   followUpSentAt      DateTime?
   followUpKind        String?
+  // Primeira mensagem do cliente pelo WhatsApp. Só quem chegou depois do
+  // retorno "sem agendamento" existir tem esse campo: é ele que coloca o
+  // cliente nesse retorno (7 dias, depois a cada 30, até agendar).
+  // followUpCount = quantos retornos "sem agendamento" ele já recebeu.
+  firstContactAt      DateTime?
+  followUpCount       Int        @default(0)
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
@@ -267,6 +274,14 @@ model CompanySettings {
   // Número conectado pelo QR Code (WhatsApp Web), ex.: 5531999999999.
   whatsappPhone String?
 
+  // Como o bot conversa com quem escreve por conta própria:
+  //   "captura": só cadastra o cliente (perguntando o nome se não souber),
+  //     manda botCaptureWelcomeMessage e deixa a conversa para a equipe;
+  //   "menu": boas-vindas + menu (agendar, ver, remarcar, falar com a equipe).
+  botMode                  String  @default("menu")
+  botCaptureWelcomeMessage String  @default("Olá, {nome}! Seja bem-vinda ao nosso espaço. Em breve nosso time vai entrar em contato com você.")
+  botAskNameMessage        String  @default("Olá! Seja bem-vinda ao nosso espaço. Para começarmos, qual é o seu nome?")
+
   // Configuração do chatbot do WhatsApp. As mensagens aceitam os marcadores
   // {nome}, {servico}, {data} e {hora}. botWorkDays usa 0 = domingo ... 6 = sábado.
   botEnabled             Boolean @default(true)
@@ -317,6 +332,21 @@ model CompanySettings {
   botFollowUpInactiveDays     Int     @default(25)
   botFollowUpInactiveMessage  String  @default("Oi, {nome}! Sentimos sua falta por aqui. Que tal agendar um horário?")
   botFollowUpDailyLimit       Int     @default(30)
+  // Retorno para quem chegou pelo WhatsApp e ainda não agendou: a primeira
+  // mensagem botFollowUpLeadFirstDays dias depois do primeiro contato, depois
+  // uma a cada botFollowUpLeadRepeatDays dias, até o cliente agendar. Os
+  // prazos recomeçam quando o cliente manda mensagem.
+  botFollowUpLeadEnabled       Boolean @default(false)
+  botFollowUpLeadFirstDays     Int     @default(7)
+  botFollowUpLeadFirstMessage  String  @default("Olá, {nome}! Tudo bem? Estamos passando para retomar aquele assunto do seu agendamento. Estamos com várias condições especiais. Vamos agendar o seu horário?")
+  botFollowUpLeadRepeatDays    Int     @default(30)
+  botFollowUpLeadRepeatMessage String  @default("Olá, {nome}! Tudo bem? Estamos com várias condições especiais neste mês. Vamos agendar o seu horário?")
+  // Tela "Situação dos clientes": frequente = situationFrequentVisits
+  // atendimentos nos últimos situationFrequentMonths meses; sem contato =
+  // situationInactiveDays dias sem mensagem nem atendimento.
+  situationFrequentVisits Int @default(3)
+  situationFrequentMonths Int @default(6)
+  situationInactiveDays   Int @default(30)
   // Salva nome e número do cliente nos contatos do WhatsApp do salão.
   saveContactOnWhatsApp  Boolean @default(true)
 
@@ -341,6 +371,22 @@ model WhatsAppSession {
 
   @@unique([companyId, phone])
   @@map("whatsapp_sessions")
+}
+
+// Nome com que o contato está salvo na agenda do celular conectado. Chega
+// pela sincronização do WhatsApp (não vem junto com as mensagens), então fica
+// guardado aqui. contactId segue o formato de Lead.whatsappId: só dígitos, ou
+// o JID anônimo (@lid) quando o número não é conhecido.
+model WhatsAppContact {
+  companyId String
+  contactId String
+  name      String
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@id([companyId, contactId])
+  @@map("whatsapp_contacts")
 }
 
 // Sessão do WhatsApp Web (Baileys) de cada empresa: credenciais do aparelho

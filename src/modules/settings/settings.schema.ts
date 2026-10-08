@@ -46,6 +46,17 @@ export const updateSettingsSchema = z.object({
   botFollowUpInactiveDays: z.number().int().min(1, 'Prazo mínimo de 1 dia.').max(365, 'Prazo máximo de 365 dias.').optional(),
   botFollowUpInactiveMessage: z.string().trim().min(1, 'Informe a mensagem para clientes antigos.').max(1000).optional(),
   botFollowUpDailyLimit: z.number().int().min(1, 'Envie ao menos 1 mensagem por dia.').max(200, 'Máximo de 200 mensagens por dia.').optional(),
+  botMode: z.enum(['menu', 'captura']).optional(),
+  botCaptureWelcomeMessage: z.string().trim().min(1, 'Informe a mensagem de boas-vindas.').max(1000).optional(),
+  botAskNameMessage: z.string().trim().min(1, 'Informe a pergunta do nome.').max(1000).optional(),
+  botFollowUpLeadEnabled: z.boolean().optional(),
+  botFollowUpLeadFirstDays: z.number().int().min(1, 'Prazo mínimo de 1 dia.').max(365, 'Prazo máximo de 365 dias.').optional(),
+  botFollowUpLeadFirstMessage: z.string().trim().min(1, 'Informe a primeira mensagem para quem não agendou.').max(1000).optional(),
+  botFollowUpLeadRepeatDays: z.number().int().min(1, 'Prazo mínimo de 1 dia.').max(365, 'Prazo máximo de 365 dias.').optional(),
+  botFollowUpLeadRepeatMessage: z.string().trim().min(1, 'Informe a mensagem que se repete para quem não agendou.').max(1000).optional(),
+  situationFrequentVisits: z.number().int().min(1, 'Informe ao menos 1 atendimento.').max(100).optional(),
+  situationFrequentMonths: z.number().int().min(1, 'Informe ao menos 1 mês.').max(36, 'Máximo de 36 meses.').optional(),
+  situationInactiveDays: z.number().int().min(1, 'Informe ao menos 1 dia.').max(365, 'Máximo de 365 dias.').optional(),
 });
 
 export const addInterestSchema = z.object({
